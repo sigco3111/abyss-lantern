@@ -1420,7 +1420,7 @@ function drawPost(){
 function drawBossBar(){
   const b = G.boss;
   if (!b) return;
-  const bw = 460, bx = W/2 - bw/2, by = 46;
+  const bw = 460, bx = W/2 - bw/2, by = 90;
   ctx.fillStyle = 'rgba(4,8,18,0.8)';
   ctx.beginPath(); ctx.roundRect(bx - 10, by - 24, bw + 20, 52, 8); ctx.fill();
   ctx.textAlign = 'center';
@@ -1807,7 +1807,7 @@ function drawHUD(){
     ctx.fillStyle = '#ffe9b0';
     ctx.font = 'bold 15px "Noto Sans KR",sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(G.msg, W/2, 92);
+    ctx.fillText(G.msg, W/2, G.boss ? 132 : 92);
     ctx.globalAlpha = 1;
   }
   if (G.phase === 'shop'){
