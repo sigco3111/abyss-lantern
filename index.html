@@ -107,6 +107,7 @@ const UNIT_TYPES = [
 ];
 const MOTE = { id:'mote', name:'그림자 허수아비', cls:'summoner', cost:0, rng:70, dmg:6, cd:0.7, melee:true, mote:true };
 const ENEMY_TYPES = {
+  boss:  { name:'심연 군주', hp:520, spd:17, dmg:12, r:34, gold:15, color:'#8a2be2', boss:true },
   mob:   { name:'어둠 덩어리', hp:22,  spd:46, dmg:4, r:11, gold:1, color:'#5a3fc8' },
   fast:  { name:'속공체',      hp:13,  spd:88, dmg:2, r:8,  gold:1, color:'#a04fd8' },
   tank:  { name:'심연 괴물',   hp:130, spd:24, dmg:9, r:17, gold:4, color:'#33248f' },
@@ -192,7 +193,25 @@ const G = {
   stats: { kills: 0, earned: 0 },
   mouse: { x: 0, y: 0, down: false },
   keys: {},
+  boss: null,          // 활성 보스
+  bossSpawnT: -1,      // 보스 등장 예약 타이머
+  bossWarnT: 0,        // 등장 경고 연출
+  slowmo: 0,           // 슬로모션 남은 시간(실시간)
+  abAmt: 0,            // 색수차 강도(감쇠)
+  debris: [],          // 사망 파편
+  deathRings: [],      // 사망 확장 링
+  settings: { shake: 2, quality: 1 },  // shake: 0 끔 1 약함 2 강함 / quality: 0 낮음 1 높음
+  settingsOpen: false,
 };
+function loadSettings(){
+  try {
+    const v = JSON.parse(localStorage.getItem('abyss_lantern_settings') || 'null');
+    if (v){ G.settings.shake = [0,1,2].includes(v.shake) ? v.shake : 2; G.settings.quality = v.quality === 0 ? 0 : 1; }
+  } catch (e){}
+}
+function saveSettings(){ localStorage.setItem('abyss_lantern_settings', JSON.stringify(G.settings)); }
+function shakeMul(){ return [0, 0.45, 1][G.settings.shake]; }
+function pCap(){ return G.settings.quality ? 1800 : 450; }
 
 // ---------- 시너지 ----------
 function classCounts(){
@@ -317,13 +336,21 @@ function startWave(){
   G.wave++;
   const n = G.wave;
   const q = [];
-  const total = 3 + Math.ceil(n * 2.2);
+  const isBoss = n % 10 === 0;
+  const total = isBoss ? 4 + Math.ceil(n * 0.8) : 3 + Math.ceil(n * 2.2);
   for (let i = 0; i < total; i++){
     let kind = 'mob';
     if (n >= 3 && Math.random() < 0.25) kind = 'fast';
     if (n >= 4 && i === total - 1 && n % 4 === 0) kind = 'tank';
     if (n >= 6 && Math.random() < 0.12) kind = 'tank';
     q.push(kind);
+  }
+  if (isBoss){
+    G.bossSpawnT = 2.2;
+    G.bossWarnT = 2.2;
+    G.trauma = Math.min(G.trauma + 0.35, 1);
+    flashMsg('심연 군주가 다가옵니다…');
+    G.msgT = 3.2;
   }
   G.spawnQueue = q;
   G.spawnTimer = 0.5;
@@ -346,6 +373,26 @@ function spawnEnemy(kind){
     r: base.r, gold: base.gold, color: base.color,
     atkT: 0, flash: 0, kbx: 0, kby: 0, sx: 0.01, sxV: 0,
   });
+}
+function spawnBoss(){
+  const base = ENEMY_TYPES.boss;
+  const scale = 1 + 0.22 * (G.wave - 1);
+  const b = {
+    kind: 'boss', boss: true, x: W/2, y: 60, rot: 0, spin: 0.35,
+    hp: base.hp * scale, maxhp: base.hp * scale,
+    spd: base.spd, dmg: base.dmg * (1 + 0.1 * (G.wave - 1)),
+    r: base.r, gold: base.gold, color: base.color,
+    atkT: 0, atkCd: 3.4, flash: 0, kbx: 0, kby: 0, sx: 0.01, sxV: 0,
+  };
+  G.enemies.push(b);
+  G.boss = b;
+  G.slowmo = Math.max(G.slowmo, 0.5);
+  G.abAmt = 1;
+  G.trauma = 1;
+  G.hitstop = Math.max(G.hitstop, 0.08);
+  ringFx(b.x, b.y, 150, '#b45aff');
+  burst(b.x, b.y, '#b45aff', 40, 3);
+  flashMsg('심연 군주 등장!');
 }
 function endWave(){
   G.waveActive = false;
@@ -512,6 +559,11 @@ function updateUnits(dt){
 
 // ---------- 전투 ----------
 function updateCombat(dt){
+  if (G.bossSpawnT > 0){
+    G.bossSpawnT -= dt;
+    if (G.bossSpawnT <= 0){ G.bossSpawnT = -1; spawnBoss(); }
+  }
+  if (G.bossWarnT > 0) G.bossWarnT -= dt;
   if (G.spawnQueue.length > 0){
     G.spawnTimer -= dt;
     if (G.spawnTimer <= 0){
@@ -633,7 +685,34 @@ function updateCombat(dt){
     e.sxV *= Math.pow(0.0001, dt);
     e.sx += e.sxV * dt;
     const d = dist(e.x, e.y, L.x, L.y);
-    if (d > 26 + e.r + 4){
+    if (e.boss){
+      // 보스: 느리게 접근, 쿨다운 강타(전조 후 발동)
+      const spMul = 1 - warlockSlow();
+      if (d > 70 + e.r){
+        const a = Math.atan2(L.y - e.y, L.x - e.x);
+        e.x += Math.cos(a) * e.spd * spMul * dt;
+        e.y += Math.sin(a) * e.spd * spMul * dt;
+      } else {
+        e.atkT -= dt;
+        if (e.atkT <= 0){
+          e.atkT = e.atkCd;
+          e.sx = 1.5; e.sxV = -3;
+          G.coreHp -= e.dmg * (1 - guardianReduce());
+          G.coreFlash = 0.3;
+          G.trauma = 1;
+          G.abAmt = 1;
+          G.hitstop = Math.max(G.hitstop, 0.06);
+          ringFx(L.x, L.y, 110, '#ff4a6a');
+          burst(L.x, L.y, '#ff5a5a', 22, 2.6);
+          addDmgNum(L.x, L.y - 40, '-' + Math.round(e.dmg), '#ff4a5a', 1.6);
+          for (const u of G.units){ // 수호단 밀려남
+            const a2 = Math.atan2(u.y - L.y, u.x - L.x);
+            u.vx += Math.cos(a2) * 190; u.vy += Math.sin(a2) * 190;
+          }
+          if (G.coreHp <= 0){ G.coreHp = 0; gameOver(); return; }
+        }
+      }
+    } else if (d > 26 + e.r + 4){
       let spMul = 1 - warlockSlow();
       for (const f of G.slowFields){ if (dist(e.x, e.y, f.x, f.y) < f.r + e.r){ spMul *= 0.45; break; } }
       const a = Math.atan2(L.y - e.y, L.x - e.x);
@@ -680,20 +759,39 @@ function updateCombat(dt){
 }
 function hurtEnemy(e, dmg, sx, sy){
   e.hp -= dmg;
-  e.flash = 0.09;
-  e.sx = 0.72; e.sxV = 2.5; // 피격 스쿼시
+  e.flash = e.boss ? 0.13 : 0.16; // 피격 흰색 플래시 강화
+  e.sx = e.boss ? 0.85 : 0.68; e.sxV = 2.5; // 피격 스쿼시
   const a = Math.atan2(e.y - sy, e.x - sx);
-  e.kbx += Math.cos(a) * 4; e.kby += Math.sin(a) * 4;
-  burst(e.x, e.y, '#ffe9a8', 3, 1.6);       // 충돌 스파크
+  const kb = e.boss ? 0.5 : 4; // 보스 넉백 저항
+  e.kbx += Math.cos(a) * kb; e.kby += Math.sin(a) * kb;
+  burst(e.x, e.y, '#ffe9a8', e.boss ? 5 : 4, 1.8);       // 충돌 스파크
   addDmgNum(e.x + rand(-6, 6), e.y - e.r - 4, Math.round(dmg), dmg >= 20 ? '#ffd24a' : '#ffffff', dmg >= 20 ? 1.3 : 0.9);
 }
 function killEnemy(i){
   const e = G.enemies[i];
   G.enemies.splice(i, 1);
   G.stats.kills++;
-  burst(e.x, e.y, e.color, e.kind === 'tank' ? 26 : 12, e.kind === 'tank' ? 3 : 2);
-  ringFx(e.x, e.y, e.r * 2.2, e.color);
-  if (e.kind === 'tank'){ G.trauma = Math.min(G.trauma + 0.3, 1); G.hitstop = Math.max(G.hitstop, 0.05); }
+  const big = e.kind === 'tank' || e.boss;
+  burst(e.x, e.y, e.color, e.boss ? 70 : big ? 26 : 12, e.boss ? 4 : big ? 3 : 2);
+  // 사망 확장 링 + 파편
+  G.deathRings.push({ x: e.x, y: e.y, r: e.r * 0.8, r1: e.boss ? 260 : e.r * 5, life: e.boss ? 0.7 : 0.4, maxlife: e.boss ? 0.7 : 0.4, color: e.color });
+  const nDeb = e.boss ? 16 : big ? 8 : G.settings.quality ? 5 : 2;
+  for (let k = 0; k < nDeb; k++){
+    const a = rand(0, TAU), v = rand(60, e.boss ? 320 : 200);
+    G.debris.push({ x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 40,
+      rot: rand(0, TAU), vr: rand(-9, 9), life: rand(0.4, e.boss ? 1.1 : 0.7), maxlife: 1,
+      size: rand(2.5, e.boss ? 8 : 5.5), color: e.color });
+  }
+  if (e.boss){
+    G.boss = null;
+    G.slowmo = Math.max(G.slowmo, 1.3); // 보스 처치 슬로모션
+    G.abAmt = 1;
+    G.trauma = 1;
+    G.hitstop = Math.max(G.hitstop, 0.12);
+    G.gold += 10; G.stats.earned += 10;
+    addDmgNum(e.x, e.y - 50, '+10G 처치 보너스', '#ffd24a', 1.6);
+    flashMsg('심연 군주를 물리쳤습니다!');
+  } else if (big){ G.trauma = Math.min(G.trauma + 0.3, 1); G.hitstop = Math.max(G.hitstop, 0.05); }
   // 골드 오브 드롭
   for (let k = 0; k < e.gold; k++){
     const a = rand(0, TAU);
@@ -706,14 +804,15 @@ function mkP(x, y, vx, vy, life, color, size){
   return { x, y, vx, vy, life, maxlife: life, color, size };
 }
 function burst(x, y, color, n, spd){
+  if (!G.settings.quality) n = Math.ceil(n * 0.4);
   for (let i = 0; i < n; i++){
-    if (G.particles.length > 1800) break;
+    if (G.particles.length > pCap()) break;
     const a = rand(0, TAU), v = rand(20, 60) * spd;
     G.particles.push(mkP(x, y, Math.cos(a) * v, Math.sin(a) * v, rand(0.25, 0.6), color, rand(1.5, 3.5)));
   }
 }
 function ringFx(x, y, r, color){
-  if (G.particles.length > 1800) return;
+  if (G.particles.length > pCap()) return;
   for (let i = 0; i < 14; i++){
     const a = i / 14 * TAU;
     G.particles.push(mkP(x, y, Math.cos(a) * r * 2.2, Math.sin(a) * r * 2.2, 0.3, color, 2));
@@ -892,6 +991,13 @@ const FORM_BTNS = FORMATIONS.map((f, i) => ({ x: 18 + i * 88, y: SHOP_Y - 36, w:
 function rosterRects(){
   return G.units.map((u, i) => ({ x: 10, y: 56 + i * 26, w: 158, h: 23, i }));
 }
+const GEAR_BTN = { x: W - 46, y: 44, w: 34, h: 26 };
+const SET_PANEL = { x: W/2 - 170, y: 120, w: 340, h: 210 };
+const SET_SHAKE_BTNS = [0, 1, 2].map(v => ({ x: W/2 - 150 + v * 100, y: 186, w: 92, h: 30, v }));
+const SET_QUAL_BTNS = [1, 0].map((v, i) => ({ x: W/2 - 150 + i * 100, y: 244, w: 92, h: 30, v }));
+const SET_CLOSE_BTN = { x: W/2 - 50, y: 290, w: 100, h: 28 };
+const SHAKE_NAMES = ['끔', '약함', '강함'];
+const QUAL_NAMES = ['낮음', '높음'];
 const TITLE_BTN = { x: W/2 - 90, y: 420, w: 180, h: 52 };
 const TITLE_NEW_BTN = { x: W/2 - 90, y: 484, w: 180, h: 40 };
 const OVER_BTN  = { x: W/2 - 90, y: 474, w: 180, h: 52 };
@@ -920,6 +1026,18 @@ canvas.addEventListener('pointermove', e => {
 });
 canvas.addEventListener('pointerdown', e => {
   const p = pointerPos(e);
+  // 설정 패널
+  if (G.settingsOpen){
+    if (inRect(p, SET_CLOSE_BTN) || !inRect(p, SET_PANEL)){ G.settingsOpen = false; return; }
+    for (const b of SET_SHAKE_BTNS){
+      if (inRect(p, b)){ G.settings.shake = b.v; saveSettings(); G.trauma = 0.7; flashMsg('화면 흔들림: ' + SHAKE_NAMES[b.v]); return; }
+    }
+    for (const b of SET_QUAL_BTNS){
+      if (inRect(p, b)){ G.settings.quality = b.v; saveSettings(); flashMsg('품질: ' + QUAL_NAMES[b.v]); return; }
+    }
+    return;
+  }
+  if (G.phase !== 'title' && inRect(p, GEAR_BTN)){ G.settingsOpen = true; return; }
   if (G.phase === 'title'){
     if (G.savedRun){
       if (inRect(p, TITLE_BTN)){ restoreRun(G.savedRun); return; }
@@ -1046,6 +1164,8 @@ function newRun(){
   G.control = 'delegate'; G.behavior = 'attack';
   for (const sk of G.skills) sk.t = 0;
   G.aiming = -1; G.skillFx = []; G.slowFields = [];
+  G.boss = null; G.bossSpawnT = -1; G.bossWarnT = 0; G.slowmo = 0;
+  G.debris = []; G.deathRings = [];
   G.phase = 'shop';
   G.autoTimer = 0;
   rollShop();
@@ -1056,6 +1176,70 @@ function newRun(){
   } else {
     flashMsg('영웅을 고용해 수호단을 꾸리세요');
   }
+}
+
+function drawBoss(e){
+  const L = G.leader;
+  // 강타 전조 라인 (쿨다운 막바지 1초)
+  const inRange = dist(e.x, e.y, L.x, L.y) <= 70 + e.r;
+  if (inRange && e.atkT < 1.0){
+    const a = 1 - e.atkT;
+    ctx.globalAlpha = 0.25 + a * 0.6;
+    ctx.strokeStyle = '#ff4a5a';
+    ctx.lineWidth = 2 + a * 4;
+    ctx.setLineDash([12, 8]);
+    ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(L.x, L.y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(L.x, L.y, 40 + Math.sin(G.time * 12) * 6, 0, TAU);
+    ctx.stroke();
+    ctx.globalAlpha = 1; ctx.lineWidth = 1;
+  }
+  // 쿨다운 아크 (보스 머리 위)
+  if (inRange){
+    const cdr = clamp(1 - e.atkT / e.atkCd, 0, 1);
+    ctx.globalAlpha = 0.8;
+    ctx.strokeStyle = cdr > 0.7 ? '#ff4a5a' : 'rgba(255,154,90,0.8)';
+    ctx.lineWidth = 3.5;
+    ctx.beginPath(); ctx.arc(e.x, e.y - e.r - 14, 9, -Math.PI/2, -Math.PI/2 + cdr * TAU); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.lineWidth = 1;
+  }
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  ctx.scale(e.sx, 2 - e.sx > 0.7 ? 2 - e.sx : 1);
+  ctx.translate(-e.x, -e.y);
+  // 회전 파편 고리
+  for (let k = 0; k < 8; k++){
+    const a = G.time * 1.2 + k / 8 * TAU;
+    const px = e.x + Math.cos(a) * (e.r + 12), py = e.y + Math.sin(a) * (e.r + 12);
+    ctx.save();
+    ctx.translate(px, py); ctx.rotate(a + G.time * 3);
+    ctx.fillStyle = e.flash > 0 ? '#fff' : '#5a1fa0';
+    ctx.fillRect(-4, -4, 8, 8);
+    ctx.restore();
+  }
+  // 본체
+  shapePath(e.x, e.y, e.r * 1.15, e.rot, 6);
+  ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#3d1470';
+  ctx.shadowColor = '#8a2be2';
+  ctx.shadowBlur = 26;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = e.flash > 0 ? '#fff' : '#b45aff';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  shapePath(e.x, e.y, e.r * 0.62, -e.rot * 1.4, 6);
+  ctx.fillStyle = e.flash > 0 ? '#fff' : '#24084a';
+  ctx.fill();
+  // 눈 3개
+  ctx.fillStyle = e.flash > 0 ? '#222' : '#ff2a5a';
+  ctx.shadowColor = '#ff2a5a'; ctx.shadowBlur = 10;
+  for (const off of [-0.38, 0, 0.38]){
+    ctx.beginPath();
+    ctx.arc(e.x + off * e.r, e.y - e.r * 0.12 + Math.sin(G.time * 3 + off * 8) * 2, 3.6, 0, TAU);
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+  ctx.restore();
 }
 
 // ---------- 도형 그리기 ----------
@@ -1148,7 +1332,7 @@ function drawStarPips(x, y, star){
 // ---------- 렌더 ----------
 function draw(){
   ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
-  const sh = G.trauma * G.trauma * 14;
+  const sh = G.trauma * G.trauma * 14 * shakeMul();
   ctx.translate(rand(-sh, sh), rand(-sh, sh));
 
   drawBackground();
@@ -1160,13 +1344,107 @@ function draw(){
   drawLantern();
   drawProjectiles();
   drawSkillFx();
+  drawDeathFx();
   drawParticles();
   drawDmgNums();
   drawVignette();
+  drawPost();
   if (G.phase === 'combat'){ drawAim(); drawSkillBar(); }
+  drawBossBar();
   drawHUD();
   if (G.phase === 'shop') drawShop();
   if (G.phase === 'over') drawOver();
+  if (G.settingsOpen) drawSettings();
+}
+
+// ---------- 사망 링/파편 ----------
+function drawDeathFx(){
+  for (const r of G.deathRings){
+    const a = clamp(r.life / r.maxlife, 0, 1);
+    const rr = lerp(r.r1, r.r, a); // 감속하며 확장
+    ctx.globalAlpha = a * 0.85;
+    ctx.strokeStyle = r.color;
+    ctx.lineWidth = 1 + a * 3;
+    ctx.beginPath(); ctx.arc(r.x, r.y, rr, 0, TAU); ctx.stroke();
+    ctx.globalAlpha = a * 0.35;
+    ctx.beginPath(); ctx.arc(r.x, r.y, rr * 0.6, 0, TAU); ctx.stroke();
+  }
+  ctx.globalAlpha = 1; ctx.lineWidth = 1;
+  for (const d of G.debris){
+    const a = clamp(d.life / 0.5, 0, 1);
+    ctx.save();
+    ctx.translate(d.x, d.y);
+    ctx.rotate(d.rot);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = d.color;
+    ctx.fillRect(-d.size/2, -d.size/2, d.size, d.size * 0.7);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------- 후처리 (품질 높음) ----------
+function drawPost(){
+  if (!G.settings.quality) return;
+  // 색수차 가장자리 프린지
+  if (G.abAmt > 0.02){
+    const a = G.abAmt;
+    const w = 26 + a * 60;
+    let g = ctx.createLinearGradient(0, 0, w, 0);
+    g.addColorStop(0, 'rgba(255,40,70,' + (0.22 * a) + ')');
+    g.addColorStop(1, 'rgba(255,40,70,0)');
+    ctx.fillStyle = g; ctx.fillRect(-20, -20, w, H + 40);
+    g = ctx.createLinearGradient(W, 0, W - w, 0);
+    g.addColorStop(0, 'rgba(60,200,255,' + (0.22 * a) + ')');
+    g.addColorStop(1, 'rgba(60,200,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(W - w, -20, w + 20, H + 40);
+  }
+  // 보스 경고: 화면 암전 펄스
+  if (G.bossWarnT > 0){
+    const a = Math.min(0.4, G.bossWarnT * 0.3) * (0.7 + 0.3 * Math.sin(G.time * 9));
+    ctx.fillStyle = 'rgba(40,4,60,' + a + ')';
+    ctx.fillRect(-20, -20, W + 40, H + 40);
+  }
+  // 등불 위기: 붉은 맥동 비네트
+  if ((G.phase === 'combat' || G.phase === 'shop') && G.coreHp / G.coreMax < 0.3){
+    const a = (0.3 - G.coreHp / G.coreMax) * (0.55 + 0.45 * Math.sin(G.time * 5));
+    const g = ctx.createRadialGradient(W/2, H/2, 220, W/2, H/2, 640);
+    g.addColorStop(0, 'rgba(255,30,40,0)');
+    g.addColorStop(1, 'rgba(255,30,40,' + (a * 0.5) + ')');
+    ctx.fillStyle = g;
+    ctx.fillRect(-20, -20, W + 40, H + 40);
+  }
+}
+
+// ---------- 보스 HP/쿨다운 바 ----------
+function drawBossBar(){
+  const b = G.boss;
+  if (!b) return;
+  const bw = 460, bx = W/2 - bw/2, by = 46;
+  ctx.fillStyle = 'rgba(4,8,18,0.8)';
+  ctx.beginPath(); ctx.roundRect(bx - 10, by - 24, bw + 20, 52, 8); ctx.fill();
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#d9a8ff';
+  ctx.font = 'bold 13px "Noto Sans KR",sans-serif';
+  ctx.fillText('심연 군주', W/2, by - 8);
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(bx, by, bw, 10);
+  const hpr = clamp(b.hp / b.maxhp, 0, 1);
+  const g = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+  g.addColorStop(0, '#b45aff'); g.addColorStop(1, '#ff4a9a');
+  ctx.fillStyle = g;
+  ctx.fillRect(bx, by, bw * hpr, 10);
+  // 공격 쿨다운 라인
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(bx, by + 13, bw, 4);
+  const inRange = dist(b.x, b.y, G.leader.x, G.leader.y) <= 70 + b.r;
+  const cdr = inRange ? clamp(1 - b.atkT / b.atkCd, 0, 1) : 0;
+  ctx.fillStyle = cdr > 0.7 ? '#ff4a5a' : '#ff9a5a';
+  ctx.fillRect(bx, by + 13, bw * cdr, 4);
+  ctx.fillStyle = 'rgba(220,190,255,0.75)';
+  ctx.font = '9px "Noto Sans KR",sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(inRange ? (cdr >= 1 ? '강타!' : '강타 대기') : '접근 중', bx + bw + 8, by + 17);
 }
 
 function drawBackground(){
@@ -1257,6 +1535,7 @@ function drawUnits(){
 
 function drawEnemies(){
   for (const e of G.enemies){
+    if (e.boss){ drawBoss(e); continue; }
     ctx.save();
     ctx.translate(e.x, e.y);
     ctx.scale(e.sx, 2 - e.sx > 0.7 ? 2 - e.sx : 1);
@@ -1490,6 +1769,15 @@ function drawHUD(){
   ctx.font = '11px monospace';
   ctx.textAlign = 'right';
   ctx.fillText(G.fps.toFixed(0) + ' FPS', W - 12, 16);
+  // 설정 버튼
+  ctx.beginPath();
+  ctx.roundRect(GEAR_BTN.x, GEAR_BTN.y, GEAR_BTN.w, GEAR_BTN.h, 6);
+  ctx.fillStyle = G.settingsOpen ? 'rgba(255,210,74,0.3)' : 'rgba(40,56,96,0.55)';
+  ctx.fill();
+  ctx.fillStyle = G.settingsOpen ? '#ffd24a' : 'rgba(190,205,235,0.85)';
+  ctx.font = '15px "Noto Sans KR",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('⚙', GEAR_BTN.x + GEAR_BTN.w/2, GEAR_BTN.y + 18);
   // 위임 모드 버튼
   for (const b of BEHAVE_BTNS){
     const active = G.behavior === b.id && G.control === 'delegate';
@@ -1531,6 +1819,55 @@ function drawHUD(){
     else
       ctx.fillText('준비되면 파도 시작 버튼 또는 스페이스를 누르세요', W/2, SHOP_Y - 46);
   }
+}
+
+function drawSettings(){
+  ctx.fillStyle = 'rgba(2,4,12,0.65)';
+  ctx.fillRect(-20, -20, W + 40, H + 40);
+  const r = SET_PANEL;
+  ctx.beginPath();
+  ctx.roundRect(r.x, r.y, r.w, r.h, 10);
+  ctx.fillStyle = 'rgba(10,16,34,0.97)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120,150,220,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e8f0ff';
+  ctx.font = 'bold 17px "Noto Sans KR",sans-serif';
+  ctx.fillText('설정', r.x + r.w/2, r.y + 32);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(190,205,235,0.9)';
+  ctx.font = '13px "Noto Sans KR",sans-serif';
+  ctx.fillText('화면 흔들림', r.x + 20, 178);
+  for (const b of SET_SHAKE_BTNS){
+    const on = G.settings.shake === b.v;
+    ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 6);
+    ctx.fillStyle = on ? 'rgba(255,210,74,0.3)' : 'rgba(40,56,96,0.6)';
+    ctx.fill();
+    if (on){ ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.lineWidth = 1; }
+    ctx.fillStyle = on ? '#ffd24a' : 'rgba(190,205,235,0.85)';
+    ctx.font = '13px "Noto Sans KR",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(SHAKE_NAMES[b.v], b.x + b.w/2, b.y + 20);
+  }
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(190,205,235,0.9)';
+  ctx.font = '13px "Noto Sans KR",sans-serif';
+  ctx.fillText('품질 (낮음 = 파티클·후처리 절감)', r.x + 20, 236);
+  for (const b of SET_QUAL_BTNS){
+    const on = G.settings.quality === b.v;
+    ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 6);
+    ctx.fillStyle = on ? 'rgba(255,210,74,0.3)' : 'rgba(40,56,96,0.6)';
+    ctx.fill();
+    if (on){ ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.lineWidth = 1; }
+    ctx.fillStyle = on ? '#ffd24a' : 'rgba(190,205,235,0.85)';
+    ctx.font = '13px "Noto Sans KR",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(QUAL_NAMES[b.v], b.x + b.w/2, b.y + 20);
+  }
+  drawButton(SET_CLOSE_BTN, '닫기', false);
 }
 
 function drawButton(r, label, accent){
@@ -1670,7 +2007,7 @@ function drawTitle(){
   }
   ctx.fillStyle = 'rgba(120,140,180,0.5)';
   ctx.font = '11px "Noto Sans KR",sans-serif';
-  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R5', W/2, H - 24);
+  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R6', W/2, H - 24);
 }
 
 function drawOver(){
@@ -1763,6 +2100,9 @@ function loop(now){
   if (now - fpsWall >= 500){ G.fps = fpsFrames * 1000 / (now - fpsWall); fpsFrames = 0; fpsWall = now; }
   if (SPEED > 1) dt *= SPEED;
   if (G.hitstop > 0){ G.hitstop -= dt; draw(); requestAnimationFrame(loop); return; }
+  if (G.slowmo > 0){ G.slowmo -= dt; G.abAmt = Math.max(G.abAmt, 0.7); dt *= 0.22; } // 슬로모션
+  if (G.settingsOpen){ draw(); requestAnimationFrame(loop); return; } // 설정 열린 동안 일시정지
+  G.abAmt = Math.max(0, G.abAmt - dt * 1.4);
   G.time += dt;
   G.trauma = Math.max(0, G.trauma - dt * 1.6);
   if (G.msgT > 0) G.msgT -= dt;
@@ -1805,10 +2145,25 @@ function loop(now){
     d.life -= dt; d.y -= 30 * dt;
     if (d.life <= 0) G.dmgNums.splice(i, 1);
   }
+  for (let i = G.deathRings.length - 1; i >= 0; i--){
+    const r = G.deathRings[i];
+    r.life -= dt;
+    if (r.life <= 0) G.deathRings.splice(i, 1);
+  }
+  for (let i = G.debris.length - 1; i >= 0; i--){
+    const d = G.debris[i];
+    d.life -= dt;
+    d.x += d.vx * dt; d.y += d.vy * dt;
+    d.vy += 340 * dt; // 중력
+    d.vx *= Math.pow(0.2, dt);
+    d.rot += d.vr * dt;
+    if (d.life <= 0) G.debris.splice(i, 1);
+  }
   draw();
   requestAnimationFrame(loop);
 }
 window.addEventListener('pagehide', () => { saveRun(); saveMeta(); });
+loadSettings();
 loadMeta();
 G.savedRun = loadSavedRun();
 requestAnimationFrame(loop);
@@ -1821,6 +2176,8 @@ if (location.search.indexOf('autotest') >= 0){
   window.__G = G;
   setTimeout(() => {
     newRun();
+    const wm = location.search.match(/wave=(\d+)/);
+    if (wm){ G.wave = Math.max(0, parseInt(wm[1], 10) || 0); G.gold = 500; }
     let placed = 0;
     for (let guard = 0; guard < 12 && placed < 3; guard++){
       let bi = -1, bc = 99;
