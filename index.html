@@ -136,6 +136,17 @@ const SKILLS = [
   { id: 'slow', key: '3', name: '시간의 늪', cd: 22, color: '#8fe2ff', radius: 165 },
 ];
 
+// ---------- 환생 강화 데이터 ----------
+const REBIRTH_UPGRADES = [
+  { id:'wick',      name:'등불 심지',   desc:'등불 최대 내구 +25',  max:5, costs:[10, 25, 50, 90, 140] },
+  { id:'ember',     name:'고대의 불씨', desc:'시작 골드 +5',        max:5, costs:[8, 20, 40, 70, 110] },
+  { id:'discipline',name:'수호단 규율', desc:'유닛 피해 +8%',       max:5, costs:[12, 30, 60, 100, 150] },
+  { id:'swift',     name:'신속한 항해', desc:'유닛 공격속도 +6%',   max:5, costs:[12, 30, 60, 100, 150] },
+  { id:'bless',     name:'심연의 축복', desc:'시작 시 1G 영웅 1기', max:1, costs:[60] },
+  { id:'eternal',   name:'영원한 등불', desc:'잔광 획득 +15%',      max:3, costs:[30, 70, 130] },
+];
+function up(id){ return (G.meta.upgrades[id] || 0); }
+
 // ---------- 상태 ----------
 const G = {
   phase: 'title',       // title | shop | combat | over
@@ -171,6 +182,12 @@ const G = {
   time: 0,
   beamAngle: 0,
   msg: '', msgT: 0,
+  meta: { glimmer: 0, best: 0, totalRuns: 0, upgrades: {}, lastSeen: 0 },
+  savedRun: null,
+  offlineGain: 0,
+  lastGain: 0,
+  resetConfirmT: 0,
+  saveT: 0,
   fps: 0,
   stats: { kills: 0, earned: 0 },
   mouse: { x: 0, y: 0, down: false },
@@ -197,6 +214,7 @@ function unitDmg(u){
   if (u.aoe > 0){ const l = synergyLevel('cannon'); d *= l === 2 ? 1.6 : l === 1 ? 1.25 : 1; }
   const cr = [0, 0.12, 0.3][synergyLevel('assassin')];
   if (cr > 0 && Math.random() < cr) d *= 2; // 치명타
+  d *= 1 + 0.08 * up('discipline'); // 수호단 규율
   return d;
 }
 function clericRegen(){ return [0, 0.6, 1.5][synergyLevel('cleric')]; }
@@ -207,6 +225,7 @@ function summonMul(){ const l = synergyLevel('summoner'); return { cd: l === 2 ?
 function unitCd(u){
   let c = u.cd;
   if (u.cls === 'archer'){ const l = synergyLevel('archer'); c /= l === 2 ? 1.6 : l === 1 ? 1.25 : 1; }
+  c /= 1 + 0.06 * up('swift'); // 신속한 항해
   return c;
 }
 function unitAoe(u){
@@ -286,9 +305,11 @@ function buyCard(i){
     keep.sx = 1.6;
     burst(keep.x, keep.y, '#ffd27a', 26, 3);
     addDmgNum(keep.x, keep.y - 24, '★' + keep.star + ' 합체!', '#ffd27a', 1.4);
+    saveRun();
     return;
   }
   addUnit(t);
+  saveRun();
 }
 
 // ---------- 웨이브 ----------
@@ -309,6 +330,7 @@ function startWave(){
   G.waveActive = true;
   G.phase = 'combat';
   G.autoTimer = 0;
+  saveRun();
 }
 function spawnEnemy(kind){
   const base = ENEMY_TYPES[kind];
@@ -337,15 +359,25 @@ function endWave(){
   G.autoTimer = G.autoNext ? 10 : 0;
   rollShop();
   flashMsg('파도 ' + G.wave + ' 클리어! +' + bonus + '골드 (이자 +' + interest + ')');
+  saveRun();
 }
 function gameOver(){
   G.phase = 'over';
-  if (G.wave > G.best){
-    G.best = G.wave;
-    localStorage.setItem('abyss_lantern_best', String(G.best));
-  }
+  G.aiming = -1;
+  const gain = Math.round((G.wave * 10 + Math.floor(G.stats.kills / 2)) * (1 + 0.15 * up('eternal')));
+  G.lastGain = gain;
+  G.meta.glimmer += gain;
+  G.meta.totalRuns++;
+  if (G.wave > G.meta.best) G.meta.best = G.wave;
+  G.best = G.meta.best;
+  saveMeta();
+  clearRun(); // 런 종료 - 이어하기 삭제
   G.trauma = 1;
+  G.hitstop = Math.max(G.hitstop, 0.15);
   burst(G.leader.x, G.leader.y, '#ffd27a', 60, 4);
+  for (let i = 0; i < 40; i++)
+    G.particles.push(mkP(G.leader.x + rand(-24, 24), G.leader.y + rand(-24, 24),
+      rand(-30, 30), rand(-90, -30), rand(1.2, 2.6), i % 2 ? '#ff9a5a' : '#ffd24a', rand(2, 4)));
 }
 
 // ---------- 이동/조종 ----------
@@ -698,6 +730,77 @@ function addDmgNum(x, y, val, color, scale){
 }
 function flashMsg(m){ G.msg = m; G.msgT = 2.2; }
 
+// ---------- 메타 저장 (환생/잔광) ----------
+function saveMeta(){
+  G.meta.lastSeen = Date.now();
+  localStorage.setItem('abyss_lantern_meta', JSON.stringify(G.meta));
+}
+function loadMeta(){
+  try {
+    const m = JSON.parse(localStorage.getItem('abyss_lantern_meta') || 'null');
+    if (m){ G.meta = { glimmer: 0, best: 0, totalRuns: 0, upgrades: {}, lastSeen: 0, ...m }; }
+  } catch (e){}
+  const legacyBest = parseInt(localStorage.getItem('abyss_lantern_best') || '0', 10);
+  if (legacyBest > G.meta.best) G.meta.best = legacyBest;
+  G.best = G.meta.best;
+  // 오프라인 정산 (최대 8시간)
+  const nowMs = Date.now();
+  if (G.meta.lastSeen && nowMs - G.meta.lastSeen > 5 * 60 * 1000){
+    const hours = Math.min((nowMs - G.meta.lastSeen) / 3600000, 8);
+    const rate = Math.max(1, Math.floor(G.meta.best / 3));
+    const gain = Math.floor(hours * rate * (1 + 0.15 * up('eternal')));
+    if (gain > 0){ G.meta.glimmer += gain; G.offlineGain = gain; }
+  }
+  saveMeta();
+}
+
+// ---------- 런 저장/이어하기 ----------
+function saveRun(){
+  if (G.phase !== 'shop' && G.phase !== 'combat') return;
+  const run = {
+    v: 5, gold: G.gold, wave: G.wave, coreHp: Math.round(G.coreHp),
+    units: G.units.filter(u => !u.mote).map(u => ({ id: u.id, star: u.star, act: u.act })),
+    formation: G.formation, behavior: G.behavior, stats: G.stats, savedAt: Date.now(),
+  };
+  localStorage.setItem('abyss_lantern_run', JSON.stringify(run));
+}
+function loadSavedRun(){
+  try {
+    const r = JSON.parse(localStorage.getItem('abyss_lantern_run') || 'null');
+    return r && r.v === 5 && r.units ? r : null;
+  } catch (e){ return null; }
+}
+function clearRun(){ localStorage.removeItem('abyss_lantern_run'); }
+function restoreRun(r){
+  newRun();
+  G.gold = r.gold; G.wave = r.wave;
+  G.coreHp = Math.min(r.coreHp, G.coreMax);
+  G.units = [];
+  for (const su of r.units){
+    const t = UNIT_TYPES.find(x => x.id === su.id);
+    if (!t) continue;
+    G.units.push({ ...t, star: su.star, cool: 0,
+      x: G.leader.x + rand(-30, 30), y: G.leader.y + rand(-30, 30),
+      vx: 0, vy: 0, rot: rand(0, TAU), sx: 1, sxV: 0, act: su.act || 'form', trail: [] });
+  }
+  G.formation = r.formation || 'circle';
+  G.behavior = r.behavior || 'attack';
+  G.stats = r.stats || { kills: 0, earned: 0 };
+  flashMsg('파도 ' + G.wave + ' - 잔불에서 다시 점화합니다');
+}
+function buyUpgrade(i){
+  const u = REBIRTH_UPGRADES[i];
+  const t = up(u.id);
+  if (t >= u.max){ flashMsg('최대 단계입니다'); return; }
+  const c = u.costs[t];
+  if (G.meta.glimmer < c){ flashMsg('잔광이 부족합니다'); return; }
+  G.meta.glimmer -= c;
+  G.meta.upgrades[u.id] = t + 1;
+  saveMeta();
+  G.trauma = Math.min(G.trauma + 0.2, 0.6);
+  flashMsg(u.name + ' ' + (t + 1) + '단계 - ' + u.desc);
+}
+
 // ---------- 액티브 스킬 ----------
 function castSkill(i, tx, ty){
   const s = G.skills[i];
@@ -790,7 +893,15 @@ function rosterRects(){
   return G.units.map((u, i) => ({ x: 10, y: 56 + i * 26, w: 158, h: 23, i }));
 }
 const TITLE_BTN = { x: W/2 - 90, y: 420, w: 180, h: 52 };
-const OVER_BTN  = { x: W/2 - 90, y: 430, w: 180, h: 52 };
+const TITLE_NEW_BTN = { x: W/2 - 90, y: 484, w: 180, h: 40 };
+const OVER_BTN  = { x: W/2 - 90, y: 474, w: 180, h: 52 };
+const RESET_BTN = { x: W/2 - 70, y: 546, w: 140, h: 28 };
+const RB_W = 210, RB_H = 66, RB_GAP = 14;
+function rbRect(i){
+  const col = i % 3, row = Math.floor(i / 3);
+  const x0 = W/2 - (3 * RB_W + 2 * RB_GAP) / 2;
+  return { x: x0 + col * (RB_W + RB_GAP), y: 218 + row * (RB_H + RB_GAP), w: RB_W, h: RB_H };
+}
 function inRect(p, r){ return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h; }
 
 // ---------- 입력 ----------
@@ -809,8 +920,34 @@ canvas.addEventListener('pointermove', e => {
 });
 canvas.addEventListener('pointerdown', e => {
   const p = pointerPos(e);
-  if (G.phase === 'title'){ if (inRect(p, TITLE_BTN)) newRun(); return; }
-  if (G.phase === 'over'){ if (inRect(p, OVER_BTN)) newRun(); return; }
+  if (G.phase === 'title'){
+    if (G.savedRun){
+      if (inRect(p, TITLE_BTN)){ restoreRun(G.savedRun); return; }
+      if (inRect(p, TITLE_NEW_BTN)){ newRun(); return; }
+      return;
+    }
+    if (inRect(p, TITLE_BTN)) newRun();
+    return;
+  }
+  if (G.phase === 'over'){
+    for (let i = 0; i < REBIRTH_UPGRADES.length; i++){
+      if (inRect(p, rbRect(i))){ buyUpgrade(i); return; }
+    }
+    if (inRect(p, OVER_BTN)){ newRun(); return; }
+    if (inRect(p, RESET_BTN)){
+      if (G.resetConfirmT > 0){
+        localStorage.removeItem('abyss_lantern_meta');
+        localStorage.removeItem('abyss_lantern_run');
+        localStorage.removeItem('abyss_lantern_best');
+        location.reload();
+      } else {
+        G.resetConfirmT = 3;
+        flashMsg('정말 모든 기록을 초기화할까요? 버튼을 다시 누르세요');
+      }
+      return;
+    }
+    return;
+  }
   // 위임 모드 버튼 (상시)
   for (const b of BEHAVE_BTNS){
     if (inRect(p, b)){
@@ -892,7 +1029,9 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => { G.keys[e.key.toLowerCase()] = false; });
 
 function newRun(){
-  G.gold = 10; G.wave = 0;
+  clearRun();
+  G.gold = 10 + 5 * up('ember'); G.wave = 0;
+  G.coreMax = 100 + 25 * up('wick');
   G.coreHp = G.coreMax;
   G.leader.x = W/2; G.leader.y = 300; G.leader.vx = 0; G.leader.vy = 0; G.leader.trail = [];
   G.units = [];
@@ -906,7 +1045,14 @@ function newRun(){
   G.phase = 'shop';
   G.autoTimer = 0;
   rollShop();
-  flashMsg('영웅을 고용해 수호단을 꾸리세요');
+  if (up('bless') > 0){
+    const pool1 = UNIT_TYPES.filter(t => t.cost === 1);
+    addUnit(pool1[Math.floor(Math.random() * pool1.length)]);
+    flashMsg('심연의 축복: 영웅 1기가 함께합니다');
+  } else {
+    flashMsg('영웅을 고용해 수호단을 꾸리세요');
+  }
+  saveRun();
 }
 
 // ---------- 도형 그리기 ----------
@@ -1501,7 +1647,24 @@ function drawTitle(){
   ctx.fillStyle = 'rgba(140,160,200,0.8)';
   ctx.fillText('전투는 자동 — 직접 이끌거나(마우스/WASD) 위임하세요(스페이스 전환)', W/2, 332);
   ctx.fillText('액티브 스킬: 1/2/3 조준 후 클릭 (위임 시 자동 발동)', W/2, 356);
-  drawButton(TITLE_BTN, '시작하기', true);
+  // 메타 정보
+  if (G.meta.best > 0 || G.meta.glimmer > 0){
+    ctx.fillStyle = 'rgba(255,210,74,0.9)';
+    ctx.font = '13px "Noto Sans KR",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('보유 잔광 ' + G.meta.glimmer + ' · 최고 파도 ' + G.meta.best, W/2, 392);
+  }
+  if (G.offlineGain > 0){
+    ctx.fillStyle = '#ffe9b0';
+    ctx.font = '13px "Noto Sans KR",sans-serif';
+    ctx.fillText('떠나있는 동안 잔광 +' + G.offlineGain, W/2, 120);
+  }
+  if (G.savedRun){
+    drawButton(TITLE_BTN, '이어하기 - 파도 ' + G.savedRun.wave, true);
+    drawButton(TITLE_NEW_BTN, '새로 점화', false);
+  } else {
+    drawButton(TITLE_BTN, '시작하기', true);
+  }
   if (G.best > 0){
     ctx.fillStyle = 'rgba(255,210,74,0.8)';
     ctx.font = '13px "Noto Sans KR",sans-serif';
@@ -1509,23 +1672,87 @@ function drawTitle(){
   }
   ctx.fillStyle = 'rgba(120,140,180,0.5)';
   ctx.font = '11px "Noto Sans KR",sans-serif';
-  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R4', W/2, H - 24);
+  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R5', W/2, H - 24);
 }
 
 function drawOver(){
-  ctx.fillStyle = 'rgba(2,3,10,0.78)';
-  ctx.fillRect(0, 0, W, H);
+  // 잔불이 꺼져가는 어둠
+  ctx.fillStyle = 'rgba(2,3,10,0.82)';
+  ctx.fillRect(-20, -20, W + 40, H + 40);
+  const L = G.leader;
+  const glowR = 90 + Math.sin(G.time * 2) * 10;
+  const g = ctx.createRadialGradient(L.x, L.y, 10, L.x, L.y, glowR);
+  g.addColorStop(0, 'rgba(255,180,74,0.28)');
+  g.addColorStop(1, 'rgba(255,180,74,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(L.x - glowR, L.y - glowR, glowR * 2, glowR * 2);
+
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ff8a6a';
-  ctx.font = 'bold 44px "Noto Sans KR",sans-serif';
-  ctx.fillText('등불이 꺼졌습니다', W/2, 240);
-  ctx.fillStyle = '#cfe0ff';
-  ctx.font = '18px "Noto Sans KR",sans-serif';
-  ctx.fillText('도달 파도: ' + G.wave + '   ·   처치: ' + G.stats.kills + '   ·   획득 골드: ' + G.stats.earned, W/2, 300);
+  ctx.fillStyle = '#ffb44a';
+  ctx.font = 'bold 30px "Noto Sans KR",sans-serif';
+  ctx.fillText('등불이 꺼졌습니다', W/2, 104);
+  ctx.fillStyle = 'rgba(207,224,255,0.85)';
+  ctx.font = '14px "Noto Sans KR",sans-serif';
+  ctx.fillText('파도 ' + G.wave + ' · 처치 ' + G.stats.kills + ' · 횟수 ' + G.meta.totalRuns + '회', W/2, 134);
   ctx.fillStyle = '#ffd24a';
-  ctx.font = '15px "Noto Sans KR",sans-serif';
-  ctx.fillText('최고 기록: 파도 ' + G.best + (G.wave >= G.best ? '  (신기록!)' : ''), W/2, 336);
+  ctx.font = 'bold 16px "Noto Sans KR",sans-serif';
+  ctx.fillText('잔광 +' + G.lastGain + '   (보유 잔광 ' + G.meta.glimmer + ')', W/2, 166);
+  ctx.fillStyle = 'rgba(140,160,200,0.75)';
+  ctx.font = '12px "Noto Sans KR",sans-serif';
+  ctx.fillText('영구 강화 - 잔광으로 다음 점화를 밝히세요', W/2, 196);
+
+  for (let i = 0; i < REBIRTH_UPGRADES.length; i++){
+    const u = REBIRTH_UPGRADES[i], r = rbRect(i);
+    const t = up(u.id);
+    const maxed = t >= u.max;
+    const cost = maxed ? 0 : u.costs[t];
+    const afford = !maxed && G.meta.glimmer >= cost;
+    ctx.beginPath();
+    ctx.roundRect(r.x, r.y, r.w, r.h, 8);
+    ctx.fillStyle = maxed ? 'rgba(24,34,60,0.85)' : afford ? 'rgba(44,60,100,0.92)' : 'rgba(20,28,50,0.85)';
+    ctx.fill();
+    ctx.strokeStyle = maxed ? 'rgba(90,110,150,0.4)' : afford ? '#ffd24a' : 'rgba(90,110,150,0.5)';
+    ctx.lineWidth = afford ? 1.8 : 1.1;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = maxed ? 'rgba(160,175,205,0.8)' : '#f0f5ff';
+    ctx.font = 'bold 12px "Noto Sans KR",sans-serif';
+    ctx.fillText(u.name, r.x + 10, r.y + 20);
+    // 단계 핍
+    ctx.textAlign = 'right';
+    let pips = '';
+    for (let k = 0; k < u.max; k++) pips += k < t ? '●' : '○';
+    ctx.fillStyle = '#ffd24a';
+    ctx.font = '10px "Noto Sans KR",sans-serif';
+    ctx.fillText(pips, r.x + r.w - 10, r.y + 20);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(190,205,235,0.85)';
+    ctx.font = '10px "Noto Sans KR",sans-serif';
+    ctx.fillText(u.desc, r.x + 10, r.y + 38);
+    ctx.fillStyle = maxed ? 'rgba(140,160,200,0.6)' : afford ? '#ffd24a' : 'rgba(255,120,120,0.85)';
+    ctx.font = 'bold 11px "Noto Sans KR",sans-serif';
+    ctx.fillText(maxed ? 'MAX' : '잔광 ' + cost, r.x + 10, r.y + 56);
+  }
+
+  if (G.msgT > 0){
+    ctx.globalAlpha = clamp(G.msgT / 0.4, 0, 1);
+    ctx.fillStyle = '#ffe9b0';
+    ctx.font = 'bold 13px "Noto Sans KR",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(G.msg, W/2, 452);
+    ctx.globalAlpha = 1;
+  }
   drawButton(OVER_BTN, '다시 점화', true);
+  // 기록 초기화 (2단계 확인)
+  ctx.beginPath();
+  ctx.roundRect(RESET_BTN.x, RESET_BTN.y, RESET_BTN.w, RESET_BTN.h, 6);
+  ctx.fillStyle = G.resetConfirmT > 0 ? 'rgba(160,40,40,0.55)' : 'rgba(30,40,70,0.6)';
+  ctx.fill();
+  ctx.fillStyle = G.resetConfirmT > 0 ? '#ffb0b0' : 'rgba(150,170,210,0.65)';
+  ctx.font = '11px "Noto Sans KR",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(G.resetConfirmT > 0 ? '정말 초기화? 다시 클릭' : '기록 초기화', RESET_BTN.x + RESET_BTN.w/2, RESET_BTN.y + 18);
 }
 
 // ---------- 메인 루프 ----------
@@ -1561,6 +1788,13 @@ function loop(now){
     G.autoTimer -= dt;
     if (G.autoTimer <= 0) startWave();
   }
+  if (G.resetConfirmT > 0) G.resetConfirmT -= dt;
+  G.saveT += dt;
+  if (G.saveT > 10){
+    G.saveT = 0;
+    saveRun();
+    saveMeta();
+  }
   for (let i = G.particles.length - 1; i >= 0; i--){
     const p = G.particles[i];
     p.life -= dt;
@@ -1576,6 +1810,9 @@ function loop(now){
   draw();
   requestAnimationFrame(loop);
 }
+window.addEventListener('pagehide', () => { saveRun(); saveMeta(); });
+loadMeta();
+G.savedRun = loadSavedRun();
 requestAnimationFrame(loop);
 
 // ---------- 자동 부팅 테스트 (?autotest=1) ----------
