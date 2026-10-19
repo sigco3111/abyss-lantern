@@ -57,23 +57,55 @@ function angLerp(a, b, t){
 
 // ---------- 데이터 ----------
 const CLASSES = {
-  sword: { name: '검성',   color: '#ff9a3c' },
-  archer:{ name: '궁수',   color: '#8fe26a' },
-  mage:  { name: '마법사', color: '#5aa8ff' },
+  sword:    { name: '검성',   color: '#ff9a3c', light: '#ffc888' },
+  archer:   { name: '궁수',   color: '#8fe26a', light: '#d0ffb0' },
+  mage:     { name: '마법사', color: '#5aa8ff', light: '#a8d4ff' },
+  cleric:   { name: '성직자', color: '#f5f0e1', light: '#ffffff' },
+  assassin: { name: '암살자', color: '#ff5a6e', light: '#ff9fb0' },
+  cannon:   { name: '포술가', color: '#e07a5f', light: '#f4b29a' },
+  summoner: { name: '소환사', color: '#06d6a0', light: '#8af0d0' },
+  guardian: { name: '수호자', color: '#118ab2', light: '#7fd4ee' },
+  warlock:  { name: '저주사', color: '#9b5de5', light: '#caa6f5' },
+  sailor:   { name: '항해사', color: '#48cae4', light: '#a8e8f5' },
 };
 const SYNERGY = {
-  sword:  { tiers: [2, 4], desc: ['검성 피해 +20%', '검성 피해 +50%'] },
-  archer: { tiers: [2, 4], desc: ['궁수 공격속도 +25%', '궁수 공격속도 +60%'] },
-  mage:   { tiers: [2, 4], desc: ['마법사 광역 범위 +25%', '마법사 광역 범위 +50%'] },
+  sword:    { tiers: [2, 4], desc: ['검성 피해 +20%', '검성 피해 +50%'] },
+  archer:   { tiers: [2, 4], desc: ['궁수 공격속도 +25%', '궁수 공격속도 +60%'] },
+  mage:     { tiers: [2, 4], desc: ['마법사 광역 범위 +25%', '마법사 광역 범위 +50%'] },
+  cleric:   { tiers: [2, 4], desc: ['등불 재생 +0.6/초', '등불 재생 +1.5/초'] },
+  assassin: { tiers: [2, 4], desc: ['치명타 확률 +12%', '치명타 확률 +30%'] },
+  cannon:   { tiers: [2, 4], desc: ['광역 피해 +25%', '광역 피해 +60%'] },
+  summoner: { tiers: [2, 4], desc: ['소환 주기 -25%', '소환 주기 -50% · 강화'] },
+  guardian: { tiers: [2, 4], desc: ['등불 피해 감소 -15%', '등불 피해 감소 -35%'] },
+  warlock:  { tiers: [2, 4], desc: ['적 이동속도 -8%', '적 이동속도 -18%'] },
+  sailor:   { tiers: [2, 4], desc: ['보물 감지 +25%', '보물 감지 +50%'] },
 };
 const UNIT_TYPES = [
-  { id:'squire',  name:'견습 검사',  cls:'sword',  cost:1, rng:85,  dmg:9,  cd:0.85, melee:true,  desc:'근접 범위 참격' },
-  { id:'berserk', name:'광전사',     cls:'sword',  cost:2, rng:90,  dmg:22, cd:1.35, melee:true,  desc:'느리지만 강력한 일격' },
-  { id:'archer',  name:'궁수',       cls:'archer', cost:1, rng:250, dmg:6,  cd:0.70, melee:false, desc:'긴 사거리 단일 화살' },
-  { id:'rapid',   name:'속사 궁수',  cls:'archer', cost:3, rng:260, dmg:7,  cd:0.36, melee:false, desc:'매우 빠른 연사' },
-  { id:'appmage', name:'견습 마도사',cls:'mage',   cost:2, rng:205, dmg:8,  cd:1.20, melee:false, aoe:42, desc:'작은 광역 마법탄' },
-  { id:'pyro',    name:'화염술사',   cls:'mage',   cost:3, rng:215, dmg:15, cd:1.80, melee:false, aoe:72, desc:'넓은 화염 폭발' },
+  { id:'squire',    name:'견습 검사',   cls:'sword',    cost:1, rng:85,  dmg:9,  cd:0.85, melee:true,  desc:'근접 범위 참격' },
+  { id:'berserk',   name:'광전사',      cls:'sword',    cost:2, rng:90,  dmg:22, cd:1.35, melee:true,  desc:'느리지만 강력한 일격' },
+  { id:'dancer',    name:'칠흑 검무사', cls:'sword',    cost:3, rng:90,  dmg:16, cd:0.70, melee:true,  desc:'빠른 연속 참격' },
+  { id:'archer',    name:'궁수',        cls:'archer',   cost:1, rng:250, dmg:6,  cd:0.70, melee:false, desc:'긴 사거리 단일 화살' },
+  { id:'sniper',    name:'장궁 저격수', cls:'archer',   cost:2, rng:330, dmg:18, cd:1.60, melee:false, desc:'최장 사거리 저격' },
+  { id:'rapid',     name:'속사 궁수',   cls:'archer',   cost:3, rng:260, dmg:7,  cd:0.36, melee:false, desc:'매우 빠른 연사' },
+  { id:'appmage',   name:'견습 마도사', cls:'mage',     cost:2, rng:205, dmg:8,  cd:1.20, melee:false, aoe:42, desc:'작은 광역 마법탄' },
+  { id:'frost',     name:'냉기 마도사', cls:'mage',     cost:2, rng:200, dmg:10, cd:1.40, melee:false, aoe:55, desc:'차가운 광역 파동' },
+  { id:'pyro',      name:'화염술사',    cls:'mage',     cost:3, rng:215, dmg:15, cd:1.80, melee:false, aoe:72, desc:'넓은 화염 폭발' },
+  { id:'acolyte',   name:'등불 수행자', cls:'cleric',   cost:1, rng:160, dmg:4,  cd:1.10, melee:false, heal:2, desc:'공격 시 등불 회복' },
+  { id:'priest',    name:'심연 사제',   cls:'cleric',   cost:3, rng:190, dmg:9,  cd:1.50, melee:false, heal:6, desc:'심연의 빛으로 등불 회복' },
+  { id:'shade',     name:'그림자 자객', cls:'assassin', cost:2, rng:70,  dmg:14, cd:0.55, melee:true,  desc:'빠른 기습 참격' },
+  { id:'reaper',    name:'칠흑 암살자', cls:'assassin', cost:3, rng:75,  dmg:26, cd:0.90, melee:true,  desc:'치명적인 급소 공격' },
+  { id:'gunner',    name:'화포 사수',   cls:'cannon',   cost:2, rng:240, dmg:16, cd:2.00, melee:false, aoe:60, desc:'느린 포탄, 넓은 폭발' },
+  { id:'cannoneer', name:'심연 포술가', cls:'cannon',   cost:3, rng:250, dmg:26, cd:2.40, melee:false, aoe:85, desc:'심연을 가르는 포격' },
+  { id:'shaman',    name:'그림자 소환사',cls:'summoner',cost:2, rng:180, dmg:5,  cd:1.30, melee:false, summon:{ cd:7, dmg:6,  life:8  }, desc:'그림자 허수아비 소환' },
+  { id:'invoker',   name:'심연 강림술사',cls:'summoner',cost:3, rng:190, dmg:8,  cd:1.50, melee:false, summon:{ cd:6, dmg:12, life:10 }, desc:'강력한 심연수 소환' },
+  { id:'warden',    name:'등불 수호자', cls:'guardian', cost:1, rng:60,  dmg:6,  cd:1.00, melee:true,  desc:'등불 앞을 지키는 방패' },
+  { id:'sentinel',  name:'심연 파수꾼', cls:'guardian', cost:2, rng:65,  dmg:12, cd:1.10, melee:true,  desc:'단단한 심연의 보루' },
+  { id:'hexer',     name:'저주술사',    cls:'warlock',  cost:2, rng:210, dmg:7,  cd:1.20, melee:false, desc:'어둠의 저주탄' },
+  { id:'oracle',    name:'심연 예언자', cls:'warlock',  cost:3, rng:220, dmg:13, cd:1.40, melee:false, desc:'심연의 저주 예언' },
+  { id:'pilot',     name:'길잡이 뱃사공',cls:'sailor',  cost:1, rng:170, dmg:5,  cd:1.00, melee:false, desc:'보물을 찾는 눈' },
+  { id:'navigator', name:'심연 항해사', cls:'sailor',   cost:2, rng:180, dmg:10, cd:1.10, melee:false, desc:'심연 항로의 안내자' },
 ];
+const MOTE = { id:'mote', name:'그림자 허수아비', cls:'summoner', cost:0, rng:70, dmg:6, cd:0.7, melee:true, mote:true };
 const ENEMY_TYPES = {
   mob:   { name:'어둠 덩어리', hp:22,  spd:46, dmg:4, r:11, gold:1, color:'#5a3fc8' },
   fast:  { name:'속공체',      hp:13,  spd:88, dmg:2, r:8,  gold:1, color:'#a04fd8' },
@@ -147,8 +179,9 @@ const G = {
 
 // ---------- 시너지 ----------
 function classCounts(){
-  const c = { sword:0, archer:0, mage:0 };
-  for (const u of G.units) c[u.cls]++;
+  const c = {};
+  for (const k in CLASSES) c[k] = 0;
+  for (const u of G.units){ if (!u.mote) c[u.cls]++; }
   return c;
 }
 function synergyLevel(cls){
@@ -161,8 +194,16 @@ function synergyLevel(cls){
 function unitDmg(u){
   let d = u.dmg * Math.pow(2, u.star - 1);
   if (u.cls === 'sword'){ const l = synergyLevel('sword'); d *= l === 2 ? 1.5 : l === 1 ? 1.2 : 1; }
+  if (u.aoe > 0){ const l = synergyLevel('cannon'); d *= l === 2 ? 1.6 : l === 1 ? 1.25 : 1; }
+  const cr = [0, 0.12, 0.3][synergyLevel('assassin')];
+  if (cr > 0 && Math.random() < cr) d *= 2; // 치명타
   return d;
 }
+function clericRegen(){ return [0, 0.6, 1.5][synergyLevel('cleric')]; }
+function guardianReduce(){ return [0, 0.15, 0.35][synergyLevel('guardian')]; }
+function warlockSlow(){ return [0, 0.08, 0.18][synergyLevel('warlock')]; }
+function sailorLuck(){ return [0, 0.25, 0.5][synergyLevel('sailor')]; }
+function summonMul(){ const l = synergyLevel('summoner'); return { cd: l === 2 ? 0.5 : l === 1 ? 0.75 : 1, dmg: l === 2 ? 1.5 : 1 }; }
 function unitCd(u){
   let c = u.cd;
   if (u.cls === 'archer'){ const l = synergyLevel('archer'); c /= l === 2 ? 1.6 : l === 1 ? 1.25 : 1; }
@@ -286,6 +327,7 @@ function spawnEnemy(kind){
 }
 function endWave(){
   G.waveActive = false;
+  G.units = G.units.filter(u => !u.mote); // 소환수 소멸
   const interest = Math.min(Math.floor(G.gold / 10), 5);
   const bonus = 3 + interest;
   G.gold += bonus;
@@ -401,6 +443,10 @@ function updateUnits(dt){
   const cf = Math.cos(G.facing + Math.PI/2), sf = Math.sin(G.facing + Math.PI/2);
   for (let i = 0; i < G.units.length; i++){
     const u = G.units[i];
+    if (u.mote){
+      u.life -= dt;
+      if (u.life <= 0){ burst(u.x, u.y, '#06d6a0', 6, 1.5); G.units.splice(i, 1); i--; continue; }
+    }
     let ax = G.leader.x + offs[i].x * cf - offs[i].y * sf;
     let ay = G.leader.y + offs[i].x * sf + offs[i].y * cf;
     // 돌격/근접 접근
@@ -446,6 +492,10 @@ function updateCombat(dt){
   }
   const L = G.leader;
 
+  // 성직자 시너지: 등불 재생
+  const regen = clericRegen();
+  if (regen > 0 && G.coreHp < G.coreMax) G.coreHp = Math.min(G.coreMax, G.coreHp + regen * dt);
+
   // 위임 모드: 액티브 스킬 자동 발동
   if (G.control === 'delegate') autoCast();
 
@@ -476,9 +526,30 @@ function updateCombat(dt){
       G.projectiles.push({
         x: u.x, y: u.y, vx: Math.cos(a) * spd, vy: Math.sin(a) * spd,
         tgt, dmg: unitDmg(u), aoe: unitAoe(u),
-        color: u.cls === 'mage' ? '#6ab0ff' : '#bfff8a',
-        mage: u.cls === 'mage', life: 2.2,
+        color: CLASSES[u.cls].light,
+        mage: (u.aoe || 0) > 0, life: 2.2,
       });
+    }
+    // 성직자: 공격 시 등불 회복
+    if (u.heal){
+      G.coreHp = Math.min(G.coreMax, G.coreHp + u.heal * u.star);
+      burst(L.x + rand(-10, 10), L.y - rand(10, 24), '#f5f0e1', 4, 1.2);
+    }
+  }
+
+  // 소환사: 소환수 생성
+  for (const u of G.units){
+    if (!u.summon || u.mote) continue;
+    if (u.summonT == null) u.summonT = rand(2, u.summon.cd);
+    u.summonT -= dt;
+    if (u.summonT <= 0){
+      const sm = summonMul();
+      u.summonT = u.summon.cd * sm.cd;
+      const mote = { ...MOTE, star: 1, dmg: Math.round(u.summon.dmg * sm.dmg * u.star), cool: 0,
+        x: u.x + rand(-24, 24), y: u.y + rand(-24, 24), vx: 0, vy: 0, rot: rand(0, TAU),
+        sx: 1, sxV: 0, act: 'charge', trail: [], life: u.summon.life };
+      G.units.push(mote);
+      burst(mote.x, mote.y, '#06d6a0', 12, 2);
     }
   }
 
@@ -531,8 +602,8 @@ function updateCombat(dt){
     e.sx += e.sxV * dt;
     const d = dist(e.x, e.y, L.x, L.y);
     if (d > 26 + e.r + 4){
-      let spMul = 1;
-      for (const f of G.slowFields){ if (dist(e.x, e.y, f.x, f.y) < f.r + e.r){ spMul = 0.45; break; } }
+      let spMul = 1 - warlockSlow();
+      for (const f of G.slowFields){ if (dist(e.x, e.y, f.x, f.y) < f.r + e.r){ spMul *= 0.45; break; } }
       const a = Math.atan2(L.y - e.y, L.x - e.x);
       e.x += Math.cos(a) * e.spd * spMul * dt;
       e.y += Math.sin(a) * e.spd * spMul * dt;
@@ -540,7 +611,7 @@ function updateCombat(dt){
       e.atkT -= dt;
       if (e.atkT <= 0){
         e.atkT = 1.0;
-        G.coreHp -= e.dmg;
+        G.coreHp -= e.dmg * (1 - guardianReduce());
         G.coreFlash = 0.25;
         G.trauma = Math.min(G.trauma + 0.25, 1);
         burst(L.x + rand(-14, 14), L.y + rand(-14, 14), '#ff5a5a', 8, 2);
@@ -564,8 +635,10 @@ function updateCombat(dt){
       o.vy += Math.sin(a) * 700 * dt;
     }
     if (d < 24){
-      G.gold += o.value;
-      G.stats.earned += o.value;
+      let v = o.value;
+      if (Math.random() < sailorLuck()){ v += 1; addDmgNum(o.x, o.y - 10, '+1', '#48cae4', 0.9); }
+      G.gold += v;
+      G.stats.earned += v;
       burst(o.x, o.y, '#ffd24a', 6, 1.5);
       G.orbs.splice(i, 1);
       continue;
@@ -858,9 +931,39 @@ function shapePath(x, y, r, rot, sides){
   }
   ctx.closePath();
 }
-const CLS_LIGHT = { sword: '#ffc888', archer: '#d0ffb0', mage: '#a8d4ff' };
+function unitShapePath(x, y, r, rot, cls){
+  ctx.beginPath();
+  if (cls === 'cleric'){ // 십자
+    const w = r * 0.38;
+    ctx.moveTo(x - w, y - r); ctx.lineTo(x + w, y - r); ctx.lineTo(x + w, y - w);
+    ctx.lineTo(x + r, y - w); ctx.lineTo(x + r, y + w); ctx.lineTo(x + w, y + w);
+    ctx.lineTo(x + w, y + r); ctx.lineTo(x - w, y + r); ctx.lineTo(x - w, y + w);
+    ctx.lineTo(x - r, y + w); ctx.lineTo(x - r, y - w); ctx.lineTo(x - w, y - w);
+  } else if (cls === 'assassin'){ // 길쭉한 연꼴
+    ctx.moveTo(x + Math.cos(rot) * r * 1.4, y + Math.sin(rot) * r * 1.4);
+    ctx.lineTo(x + Math.cos(rot + Math.PI/2) * r * 0.5, y + Math.sin(rot + Math.PI/2) * r * 0.5);
+    ctx.lineTo(x + Math.cos(rot + Math.PI) * r * 0.85, y + Math.sin(rot + Math.PI) * r * 0.85);
+    ctx.lineTo(x + Math.cos(rot - Math.PI/2) * r * 0.5, y + Math.sin(rot - Math.PI/2) * r * 0.5);
+  } else if (cls === 'summoner' || cls === 'sailor'){ // 별 (5각/4각)
+    const pts = cls === 'summoner' ? 5 : 4;
+    for (let i = 0; i < pts * 2; i++){
+      const a = rot + i * Math.PI / pts;
+      const rr = i % 2 === 0 ? r : r * 0.48;
+      i === 0 ? ctx.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr) : ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+  } else {
+    const sides = cls === 'sword' ? 4 : cls === 'archer' || cls === 'warlock' ? 3 : cls === 'cannon' ? 5 : 6;
+    const base = cls === 'guardian' ? r * 1.2 : r;
+    const rot2 = cls === 'warlock' ? rot + Math.PI : rot;
+    for (let i = 0; i < sides; i++){
+      const a = rot2 + i * TAU / sides;
+      const rr = sides === 3 ? (i === 0 ? base * 1.15 : base * 0.85) : base;
+      i === 0 ? ctx.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr) : ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+  }
+  ctx.closePath();
+}
 function drawUnitShape(u, x, y, rot, sx, alpha){
-  const sides = u.cls === 'sword' ? 4 : u.cls === 'archer' ? 3 : 6;
   const col = CLASSES[u.cls].color;
   ctx.save();
   ctx.translate(x, y);
@@ -869,7 +972,7 @@ function drawUnitShape(u, x, y, rot, sx, alpha){
   ctx.globalAlpha = alpha;
   ctx.shadowColor = col;
   ctx.shadowBlur = 12;
-  shapePath(x, y, 12, rot, sides);
+  unitShapePath(x, y, 12, rot, u.cls);
   ctx.fillStyle = col;
   ctx.fill();
   ctx.shadowBlur = 0;
@@ -877,8 +980,8 @@ function drawUnitShape(u, x, y, rot, sx, alpha){
   ctx.lineWidth = 2.5;
   ctx.stroke();
   // 내부 하이라이트
-  shapePath(x, y, 5.5, rot, sides);
-  ctx.fillStyle = CLS_LIGHT[u.cls];
+  unitShapePath(x, y, 5.5, rot, u.cls);
+  ctx.fillStyle = CLASSES[u.cls].light;
   ctx.globalAlpha = alpha * 0.9;
   ctx.fill();
   ctx.globalAlpha = alpha;
@@ -1223,14 +1326,16 @@ function drawHUD(){
   // 시너지
   const cc = classCounts();
   ctx.textAlign = 'left';
-  ctx.font = '12px "Noto Sans KR",sans-serif';
-  let sx = 440;
-  for (const k of ['sword', 'archer', 'mage']){
+  ctx.font = '11px "Noto Sans KR",sans-serif';
+  let sx = 430;
+  for (const k in CLASSES){
+    if (cc[k] === 0) continue;
     const lv = synergyLevel(k);
     const label = CLASSES[k].name + ' ' + cc[k] + (lv > 0 ? ' (' + SYNERGY[k].desc[lv-1] + ')' : '');
+    if (sx + ctx.measureText(label).width > W - 60){ ctx.fillStyle = 'rgba(140,160,200,0.6)'; ctx.fillText('…', sx, 25); break; }
     ctx.fillStyle = lv > 0 ? CLASSES[k].color : 'rgba(140,160,200,0.45)';
     ctx.fillText(label, sx, 25);
-    sx += ctx.measureText(label).width + 18;
+    sx += ctx.measureText(label).width + 14;
   }
   ctx.fillStyle = 'rgba(140,170,220,0.7)';
   ctx.font = '11px monospace';
@@ -1362,8 +1467,14 @@ function drawShop(){
     ctx.fillText(t.name, r.x + r.w/2, r.y + 68);
     ctx.fillStyle = 'rgba(190,205,235,0.85)';
     ctx.font = '10px "Noto Sans KR",sans-serif';
-    ctx.fillText('피해 ' + t.dmg + ' · 간격 ' + t.cd + 's', r.x + r.w/2, r.y + 83);
-    ctx.fillText('사거리 ' + t.rng, r.x + r.w/2, r.y + 96);
+    if (t.summon){
+      ctx.fillText('소환 ' + t.summon.cd + 's · 피해 ' + t.dmg, r.x + r.w/2, r.y + 83);
+    } else if (t.heal){
+      ctx.fillText('피해 ' + t.dmg + ' · 회복 ' + t.heal, r.x + r.w/2, r.y + 83);
+    } else {
+      ctx.fillText('피해 ' + t.dmg + ' · 간격 ' + t.cd + 's', r.x + r.w/2, r.y + 83);
+    }
+    ctx.fillText('사거리 ' + t.rng + (t.melee ? ' (근접)' : ''), r.x + r.w/2, r.y + 96);
     ctx.fillStyle = 'rgba(150,170,210,0.7)';
   }
   drawButton(REROLL_BTN, '리롤 2G', false);
@@ -1398,7 +1509,7 @@ function drawTitle(){
   }
   ctx.fillStyle = 'rgba(120,140,180,0.5)';
   ctx.font = '11px "Noto Sans KR",sans-serif';
-  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R3', W/2, H - 24);
+  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R4', W/2, H - 24);
 }
 
 function drawOver(){
