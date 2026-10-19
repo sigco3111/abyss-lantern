@@ -1052,7 +1052,6 @@ function newRun(){
   } else {
     flashMsg('영웅을 고용해 수호단을 꾸리세요');
   }
-  saveRun();
 }
 
 // ---------- 도형 그리기 ----------
@@ -1664,11 +1663,6 @@ function drawTitle(){
     drawButton(TITLE_NEW_BTN, '새로 점화', false);
   } else {
     drawButton(TITLE_BTN, '시작하기', true);
-  }
-  if (G.best > 0){
-    ctx.fillStyle = 'rgba(255,210,74,0.8)';
-    ctx.font = '13px "Noto Sans KR",sans-serif';
-    ctx.fillText('최고 기록: 파도 ' + G.best, W/2, 505);
   }
   ctx.fillStyle = 'rgba(120,140,180,0.5)';
   ctx.font = '11px "Noto Sans KR",sans-serif';
