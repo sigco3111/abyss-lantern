@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>심연의 등불 — Abyss Lantern</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,10 +12,17 @@
     font-family:"Noto Sans KR","Pretendard","Apple SD Gothic Neo","Malgun Gothic",sans-serif;}
   #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
   canvas{background:#05070f;cursor:crosshair;touch-action:none;}
+  #rotateHint{display:none;position:fixed;inset:0;z-index:10;background:rgba(2,3,10,0.94);
+    flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;
+    color:#e8f0ff;font-size:17px;padding:0 32px;}
+  #rotateHint .ic{font-size:44px;}
+  #rotateHint button{background:rgba(70,100,160,0.5);border:0;border-radius:8px;color:#e8f0ff;
+    font:inherit;font-size:14px;padding:10px 18px;}
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="game" width="1024" height="640"></canvas></div>
+<div id="rotateHint"><div class="ic">📱⟳</div><div>기기를 가로로 돌리면<br>더 크게 플레이할 수 있습니다</div><button id="rotateHintSkip">세로로 계속하기</button></div>
 <script>
 "use strict";
 /* ============================================================
@@ -25,6 +32,9 @@
    ============================================================ */
 
 const W = 1024, H = 640;
+const COARSE = location.search.indexOf('touch=1') >= 0 ||
+  (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) || ('ontouchstart' in window);
+
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 let viewScale = 1, viewOX = 0, viewOY = 0;
@@ -40,8 +50,18 @@ function resize(){
   const rect = canvas.getBoundingClientRect();
   viewOX = rect.left; viewOY = rect.top;
 }
+let rhDismissed = false;
+function updateRotateHint(){
+  const rh = document.getElementById('rotateHint');
+  if (!rh || !rh.style) return;
+  const show = COARSE && !rhDismissed && window.innerHeight > window.innerWidth && window.innerWidth < 520;
+  rh.style.display = show ? 'flex' : 'none';
+}
 window.addEventListener('resize', resize);
 resize();
+updateRotateHint();
+const _rh = document.getElementById('rotateHintSkip');
+if (_rh && _rh.addEventListener) _rh.addEventListener('click', () => { rhDismissed = true; updateRotateHint(); });
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -76,8 +96,8 @@ const SYNERGY = {
   assassin: { tiers: [2, 4], desc: ['치명타 확률 +12%', '치명타 확률 +30%'] },
   cannon:   { tiers: [2, 4], desc: ['광역 피해 +25%', '광역 피해 +60%'] },
   summoner: { tiers: [2, 4], desc: ['소환 주기 -25%', '소환 주기 -50% · 강화'] },
-  guardian: { tiers: [2, 4], desc: ['등불 피해 감소 -15%', '등불 피해 감소 -35%'] },
-  warlock:  { tiers: [2, 4], desc: ['적 이동속도 -8%', '적 이동속도 -18%'] },
+  guardian: { tiers: [2, 4], desc: ['등불 피해 감소 -20%', '등불 피해 감소 -40%'] },
+  warlock:  { tiers: [2, 4], desc: ['적 이동속도 -10%', '적 이동속도 -22%'] },
   sailor:   { tiers: [2, 4], desc: ['보물 감지 +25%', '보물 감지 +50%'] },
 };
 const UNIT_TYPES = [
@@ -85,29 +105,29 @@ const UNIT_TYPES = [
   { id:'berserk',   name:'광전사',      cls:'sword',    cost:2, rng:90,  dmg:22, cd:1.35, melee:true,  desc:'느리지만 강력한 일격' },
   { id:'dancer',    name:'칠흑 검무사', cls:'sword',    cost:3, rng:90,  dmg:16, cd:0.70, melee:true,  desc:'빠른 연속 참격' },
   { id:'archer',    name:'궁수',        cls:'archer',   cost:1, rng:250, dmg:6,  cd:0.70, melee:false, desc:'긴 사거리 단일 화살' },
-  { id:'sniper',    name:'장궁 저격수', cls:'archer',   cost:2, rng:330, dmg:18, cd:1.60, melee:false, desc:'최장 사거리 저격' },
-  { id:'rapid',     name:'속사 궁수',   cls:'archer',   cost:3, rng:260, dmg:7,  cd:0.36, melee:false, desc:'매우 빠른 연사' },
-  { id:'appmage',   name:'견습 마도사', cls:'mage',     cost:2, rng:205, dmg:8,  cd:1.20, melee:false, aoe:42, desc:'작은 광역 마법탄' },
-  { id:'frost',     name:'냉기 마도사', cls:'mage',     cost:2, rng:200, dmg:10, cd:1.40, melee:false, aoe:55, desc:'차가운 광역 파동' },
-  { id:'pyro',      name:'화염술사',    cls:'mage',     cost:3, rng:215, dmg:15, cd:1.80, melee:false, aoe:72, desc:'넓은 화염 폭발' },
-  { id:'acolyte',   name:'등불 수행자', cls:'cleric',   cost:1, rng:160, dmg:4,  cd:1.10, melee:false, heal:2, desc:'공격 시 등불 회복' },
-  { id:'priest',    name:'심연 사제',   cls:'cleric',   cost:3, rng:190, dmg:9,  cd:1.50, melee:false, heal:6, desc:'심연의 빛으로 등불 회복' },
+  { id:'sniper',    name:'장궁 저격수', cls:'archer',   cost:2, rng:330, dmg:23, cd:1.60, melee:false, desc:'최장 사거리 저격' },
+  { id:'rapid',     name:'속사 궁수',   cls:'archer',   cost:3, rng:260, dmg:8,  cd:0.36, melee:false, desc:'매우 빠른 연사' },
+  { id:'appmage',   name:'견습 마도사', cls:'mage',     cost:2, rng:205, dmg:10, cd:1.20, melee:false, aoe:46, desc:'작은 광역 마법탄' },
+  { id:'frost',     name:'냉기 마도사', cls:'mage',     cost:2, rng:200, dmg:12, cd:1.40, melee:false, aoe:60, desc:'차가운 광역 파동' },
+  { id:'pyro',      name:'화염술사',    cls:'mage',     cost:3, rng:215, dmg:18, cd:1.80, melee:false, aoe:78, desc:'넓은 화염 폭발' },
+  { id:'acolyte',   name:'등불 수행자', cls:'cleric',   cost:1, rng:160, dmg:6,  cd:1.10, melee:false, heal:2, desc:'공격 시 등불 회복' },
+  { id:'priest',    name:'심연 사제',   cls:'cleric',   cost:3, rng:190, dmg:12, cd:1.50, melee:false, heal:6, desc:'심연의 빛으로 등불 회복' },
   { id:'shade',     name:'그림자 자객', cls:'assassin', cost:2, rng:70,  dmg:14, cd:0.55, melee:true,  desc:'빠른 기습 참격' },
   { id:'reaper',    name:'칠흑 암살자', cls:'assassin', cost:3, rng:75,  dmg:26, cd:0.90, melee:true,  desc:'치명적인 급소 공격' },
-  { id:'gunner',    name:'화포 사수',   cls:'cannon',   cost:2, rng:240, dmg:16, cd:2.00, melee:false, aoe:60, desc:'느린 포탄, 넓은 폭발' },
-  { id:'cannoneer', name:'심연 포술가', cls:'cannon',   cost:3, rng:250, dmg:26, cd:2.40, melee:false, aoe:85, desc:'심연을 가르는 포격' },
+  { id:'gunner',    name:'화포 사수',   cls:'cannon',   cost:2, rng:240, dmg:18, cd:2.00, melee:false, aoe:66, desc:'느린 포탄, 넓은 폭발' },
+  { id:'cannoneer', name:'심연 포술가', cls:'cannon',   cost:3, rng:250, dmg:31, cd:2.40, melee:false, aoe:92, desc:'심연을 가르는 포격' },
   { id:'shaman',    name:'그림자 소환사',cls:'summoner',cost:2, rng:180, dmg:5,  cd:1.30, melee:false, summon:{ cd:7, dmg:6,  life:8  }, desc:'그림자 허수아비 소환' },
   { id:'invoker',   name:'심연 강림술사',cls:'summoner',cost:3, rng:190, dmg:8,  cd:1.50, melee:false, summon:{ cd:6, dmg:12, life:10 }, desc:'강력한 심연수 소환' },
-  { id:'warden',    name:'등불 수호자', cls:'guardian', cost:1, rng:60,  dmg:6,  cd:1.00, melee:true,  desc:'등불 앞을 지키는 방패' },
-  { id:'sentinel',  name:'심연 파수꾼', cls:'guardian', cost:2, rng:65,  dmg:12, cd:1.10, melee:true,  desc:'단단한 심연의 보루' },
-  { id:'hexer',     name:'저주술사',    cls:'warlock',  cost:2, rng:210, dmg:7,  cd:1.20, melee:false, desc:'어둠의 저주탄' },
-  { id:'oracle',    name:'심연 예언자', cls:'warlock',  cost:3, rng:220, dmg:13, cd:1.40, melee:false, desc:'심연의 저주 예언' },
-  { id:'pilot',     name:'길잡이 뱃사공',cls:'sailor',  cost:1, rng:170, dmg:5,  cd:1.00, melee:false, desc:'보물을 찾는 눈' },
-  { id:'navigator', name:'심연 항해사', cls:'sailor',   cost:2, rng:180, dmg:10, cd:1.10, melee:false, desc:'심연 항로의 안내자' },
+  { id:'warden',    name:'등불 수호자', cls:'guardian', cost:1, rng:60,  dmg:8,  cd:1.00, melee:true,  desc:'등불 앞을 지키는 방패' },
+  { id:'sentinel',  name:'심연 파수꾼', cls:'guardian', cost:2, rng:65,  dmg:15, cd:1.10, melee:true,  desc:'단단한 심연의 보루' },
+  { id:'hexer',     name:'저주술사',    cls:'warlock',  cost:2, rng:210, dmg:12, cd:1.20, melee:false, desc:'어둠의 저주탄' },
+  { id:'oracle',    name:'심연 예언자', cls:'warlock',  cost:3, rng:220, dmg:21, cd:1.40, melee:false, desc:'심연의 저주 예언' },
+  { id:'pilot',     name:'길잡이 뱃사공',cls:'sailor',  cost:1, rng:170, dmg:8,  cd:1.00, melee:false, desc:'보물을 찾는 눈' },
+  { id:'navigator', name:'심연 항해사', cls:'sailor',   cost:2, rng:180, dmg:16, cd:1.10, melee:false, desc:'심연 항로의 안내자' },
 ];
 const MOTE = { id:'mote', name:'그림자 허수아비', cls:'summoner', cost:0, rng:70, dmg:6, cd:0.7, melee:true, mote:true };
 const ENEMY_TYPES = {
-  boss:  { name:'심연 군주', hp:520, spd:17, dmg:12, r:34, gold:15, color:'#8a2be2', boss:true },
+  boss:  { name:'심연 군주', hp:780, spd:17, dmg:16, r:34, gold:15, color:'#8a2be2', boss:true },
   mob:   { name:'어둠 덩어리', hp:22,  spd:46, dmg:4, r:11, gold:1, color:'#5a3fc8' },
   fast:  { name:'속공체',      hp:13,  spd:88, dmg:2, r:8,  gold:1, color:'#a04fd8' },
   tank:  { name:'심연 괴물',   hp:130, spd:24, dmg:9, r:17, gold:4, color:'#33248f' },
@@ -237,8 +257,8 @@ function unitDmg(u){
   return d;
 }
 function clericRegen(){ return [0, 0.6, 1.5][synergyLevel('cleric')]; }
-function guardianReduce(){ return [0, 0.15, 0.35][synergyLevel('guardian')]; }
-function warlockSlow(){ return [0, 0.08, 0.18][synergyLevel('warlock')]; }
+function guardianReduce(){ return [0, 0.20, 0.40][synergyLevel('guardian')]; }
+function warlockSlow(){ return [0, 0.10, 0.22][synergyLevel('warlock')]; }
 function sailorLuck(){ return [0, 0.25, 0.5][synergyLevel('sailor')]; }
 function summonMul(){ const l = synergyLevel('summoner'); return { cd: l === 2 ? 0.5 : l === 1 ? 0.75 : 1, dmg: l === 2 ? 1.5 : 1 }; }
 function unitCd(u){
@@ -285,6 +305,8 @@ function formationOffsets(){
 }
 
 // ---------- 상점 ----------
+function unitCap(){ return 12 + Math.floor(G.wave / 10); } // 보스 파도 클리어당 +1
+function rosterSize(){ return G.units.filter(u => !u.mote).length; }
 function rollShop(){
   G.shop = [];
   for (let i = 0; i < 5; i++){
@@ -313,6 +335,10 @@ function buyCard(i){
   let mergeStar = 0;
   for (const st of [1, 2]){
     if (G.units.filter(u => u.id === t.id && u.star === st).length >= 2){ mergeStar = st; break; }
+  }
+  if (mergeStar === 0 && rosterSize() >= unitCap()){
+    flashMsg('수호단이 가득 찼습니다 (' + rosterSize() + '/' + unitCap() + ') - 합체나 보스 처치로 여유를 만드세요');
+    return;
   }
   G.gold -= t.cost;
   G.shop[i] = null;
@@ -359,9 +385,13 @@ function startWave(){
   G.autoTimer = 0;
   saveRun();
 }
+function enemyScale(){
+  const n = G.wave - 1;
+  return (1 + 0.24 * n + 0.06 * Math.pow(Math.max(0, n - 7), 1.6)) * Math.pow(1.08, Math.max(0, n - 9)); // 8파 가속 + 10파 이후 지수
+}
 function spawnEnemy(kind){
   const base = ENEMY_TYPES[kind];
-  const scale = 1 + 0.22 * (G.wave - 1);
+  const scale = enemyScale();
   const L = G.leader;
   const a = rand(0, TAU), d = rand(430, 560);
   const x = clamp(L.x + Math.cos(a) * d, -30, W + 30);
@@ -369,18 +399,18 @@ function spawnEnemy(kind){
   G.enemies.push({
     kind, x, y, rot: rand(0, TAU), spin: rand(-1.5, 1.5),
     hp: base.hp * scale, maxhp: base.hp * scale,
-    spd: base.spd * rand(0.9, 1.1), dmg: base.dmg * (1 + 0.1 * (G.wave - 1)),
+    spd: base.spd * rand(0.9, 1.1), dmg: base.dmg * (1 + 0.12 * (G.wave - 1)),
     r: base.r, gold: base.gold, color: base.color,
     atkT: 0, flash: 0, kbx: 0, kby: 0, sx: 0.01, sxV: 0,
   });
 }
 function spawnBoss(){
   const base = ENEMY_TYPES.boss;
-  const scale = 1 + 0.22 * (G.wave - 1);
+  const scale = enemyScale();
   const b = {
     kind: 'boss', boss: true, x: W/2, y: 60, rot: 0, spin: 0.35,
     hp: base.hp * scale, maxhp: base.hp * scale,
-    spd: base.spd, dmg: base.dmg * (1 + 0.1 * (G.wave - 1)),
+    spd: base.spd, dmg: base.dmg * (1 + 0.12 * (G.wave - 1)),
     r: base.r, gold: base.gold, color: base.color,
     atkT: 0, atkCd: 3.4, flash: 0, kbx: 0, kby: 0, sx: 0.01, sxV: 0,
   };
@@ -985,13 +1015,15 @@ function cardRect(i){ return { x: CARD_X0 + i * (CARD_W + CARD_GAP), y: SHOP_Y +
 const REROLL_BTN = { x: 686, y: SHOP_Y + 40, w: 92, h: 40 };
 const START_BTN  = { x: 788, y: SHOP_Y + 40, w: 104, h: 40 };
 const AUTO_BTN   = { x: 900, y: SHOP_Y + 40, w: 106, h: 40 };
-const SKILL_BTNS = SKILLS.map((sk, i) => ({ x: W/2 - 111 + i * 76, y: H - 58, w: 70, h: 50 }));
+const SKILL_BTNS = SKILLS.map((sk, i) => COARSE
+  ? { x: W/2 - 134 + i * 92, y: H - 68, w: 84, h: 58 }
+  : { x: W/2 - 111 + i * 76, y: H - 58, w: 70, h: 50 });
 const BEHAVE_BTNS = BEHAVIORS.map((b, i) => ({ x: 638 + i * 96, y: 44, w: 90, h: 26, id: b.id, name: b.name }));
 const FORM_BTNS = FORMATIONS.map((f, i) => ({ x: 18 + i * 88, y: SHOP_Y - 36, w: 80, h: 28, id: f.id, name: f.name }));
 function rosterRects(){
   return G.units.map((u, i) => ({ x: 10, y: 56 + i * 26, w: 158, h: 23, i }));
 }
-const GEAR_BTN = { x: W - 46, y: 44, w: 34, h: 26 };
+const GEAR_BTN = COARSE ? { x: W - 54, y: 42, w: 42, h: 32 } : { x: W - 46, y: 44, w: 34, h: 26 };
 const SET_PANEL = { x: W/2 - 170, y: 120, w: 340, h: 210 };
 const SET_SHAKE_BTNS = [0, 1, 2].map(v => ({ x: W/2 - 150 + v * 100, y: 186, w: 92, h: 30, v }));
 const SET_QUAL_BTNS = [1, 0].map((v, i) => ({ x: W/2 - 150 + i * 100, y: 244, w: 92, h: 30, v }));
@@ -1710,15 +1742,15 @@ function drawSkillBar(){
     ctx.lineWidth = 1;
     // 아이콘
     ctx.fillStyle = ready || aiming ? s.color : 'rgba(110,125,155,0.7)';
-    const cx = r.x + r.w/2, cy = r.y + 17;
+    const cx = r.x + r.w/2, cy = r.y + r.h * 0.34;
     if (s.id === 'nova'){ ctx.beginPath(); ctx.arc(cx, cy, 7, 0, TAU); ctx.fill(); ctx.beginPath(); ctx.arc(cx, cy, 11, 0, TAU); ctx.strokeStyle = ctx.fillStyle; ctx.stroke(); }
     else if (s.id === 'beam'){ ctx.fillRect(cx - 10, cy - 2.5, 20, 5); }
     else { ctx.beginPath(); ctx.arc(cx, cy, 8, 0, TAU); ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 2.5; ctx.stroke(); ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx, cy, 3, 0, TAU); ctx.fill(); }
     // 이름 + 키
-    ctx.font = '10px "Noto Sans KR",sans-serif';
+    ctx.font = (COARSE ? 11 : 10) + 'px "Noto Sans KR",sans-serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(200,214,240,0.9)';
-    ctx.fillText('[' + s.key + '] ' + s.name, cx, r.y + 38);
+    ctx.fillText('[' + s.key + '] ' + s.name, cx, r.y + r.h * 0.78);
     // 쿨다운 오버레이
     if (!ready){
       const ratio = s.t / s.cd;
@@ -1728,7 +1760,7 @@ function drawSkillBar(){
       ctx.fill();
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 14px "Noto Sans KR",sans-serif';
-      ctx.fillText(Math.ceil(s.t) + '', cx, r.y + 24);
+      ctx.fillText(Math.ceil(s.t) + '', cx, r.y + r.h * 0.48);
     }
   }
 }
@@ -1907,7 +1939,7 @@ function drawShop(){
   ctx.textAlign = 'left';
   ctx.font = 'bold 11px "Noto Sans KR",sans-serif';
   ctx.fillStyle = 'rgba(190,205,235,0.8)';
-  if (G.units.length > 0) ctx.fillText('수호단 (클릭: 행동 변경)', 10, 50);
+  if (G.units.length > 0) ctx.fillText('수호단 ' + rosterSize() + '/' + unitCap() + ' (클릭: 행동 변경)', 10, 50);
   for (const r of rosterRects()){
     const u = G.units[r.i];
     ctx.beginPath();
@@ -1952,7 +1984,7 @@ function drawShop(){
     ctx.textAlign = 'center';
     ctx.fillText(t.name, r.x + r.w/2, r.y + 68);
     ctx.fillStyle = 'rgba(190,205,235,0.85)';
-    ctx.font = '10px "Noto Sans KR",sans-serif';
+    ctx.font = (COARSE ? 11 : 10) + 'px "Noto Sans KR",sans-serif';
     if (t.summon){
       ctx.fillText('소환 ' + t.summon.cd + 's · 피해 ' + t.dmg, r.x + r.w/2, r.y + 83);
     } else if (t.heal){
