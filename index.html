@@ -859,12 +859,14 @@ function drawOver(){
 
 // ---------- 메인 루프 ----------
 let lastT = performance.now();
+let fpsWall = performance.now(), fpsFrames = 0;
 function loop(now){
   let dt = Math.min((now - lastT) / 1000, 0.05);
   lastT = now;
-  // FPS
-  G.fpsAcc += dt; G.fpsCnt++; G.fpsT += dt;
-  if (G.fpsT >= 0.5){ G.fps = G.fpsCnt / G.fpsAcc; G.fpsAcc = 0; G.fpsCnt = 0; G.fpsT = 0; }
+  // FPS (벽시계 기준)
+  fpsFrames++;
+  if (now - fpsWall >= 500){ G.fps = fpsFrames * 1000 / (now - fpsWall); fpsFrames = 0; fpsWall = now; }
+  if (SPEED > 1) dt *= SPEED;
   // 히트스톱
   if (G.hitstop > 0){ G.hitstop -= dt; draw(); requestAnimationFrame(loop); return; }
   G.time += dt;
@@ -894,7 +896,10 @@ function loop(now){
 requestAnimationFrame(loop);
 
 // ---------- 자동 부팅 테스트 (?autotest=1) ----------
+let SPEED = 1;
 if (location.search.indexOf('autotest') >= 0){
+  const m = location.search.match(/speed=(\d+)/);
+  if (m) SPEED = Math.min(8, parseInt(m[1], 10) || 1);
   window.__G = G;
   setTimeout(() => {
     newRun();
