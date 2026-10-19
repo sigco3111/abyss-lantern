@@ -121,6 +121,7 @@ const G = {
   spawnTimer: 0,
   waveActive: false,
   autoTimer: 0,
+  autoNext: localStorage.getItem('abyss_lantern_autonext') === '1',
   hoverCard: -1,
   trauma: 0,
   hitstop: 0,
@@ -279,7 +280,7 @@ function endWave(){
   G.gold += bonus;
   G.stats.earned += bonus;
   G.phase = 'shop';
-  G.autoTimer = 10;
+  G.autoTimer = G.autoNext ? 10 : 0;
   rollShop();
   flashMsg('파도 ' + G.wave + ' 클리어! +' + bonus + '골드 (이자 +' + interest + ')');
 }
@@ -612,6 +613,7 @@ const SHOP_Y = 516, CARD_W = 122, CARD_H = 106, CARD_X0 = 18, CARD_GAP = 10;
 function cardRect(i){ return { x: CARD_X0 + i * (CARD_W + CARD_GAP), y: SHOP_Y + 8, w: CARD_W, h: CARD_H }; }
 const REROLL_BTN = { x: 686, y: SHOP_Y + 40, w: 92, h: 40 };
 const START_BTN  = { x: 788, y: SHOP_Y + 40, w: 104, h: 40 };
+const AUTO_BTN   = { x: 900, y: SHOP_Y + 40, w: 106, h: 40 };
 const BEHAVE_BTNS = BEHAVIORS.map((b, i) => ({ x: 638 + i * 96, y: 44, w: 90, h: 26, id: b.id, name: b.name }));
 const FORM_BTNS = FORMATIONS.map((f, i) => ({ x: 18 + i * 88, y: SHOP_Y - 36, w: 80, h: 28, id: f.id, name: f.name }));
 function rosterRects(){
@@ -653,6 +655,13 @@ canvas.addEventListener('pointerdown', e => {
       return;
     }
     if (inRect(p, START_BTN)){ startWave(); return; }
+    if (inRect(p, AUTO_BTN)){
+      G.autoNext = !G.autoNext;
+      localStorage.setItem('abyss_lantern_autonext', G.autoNext ? '1' : '0');
+      G.autoTimer = (G.autoNext && G.phase === 'shop') ? 10 : 0;
+      flashMsg(G.autoNext ? '자동 진행 켜짐 - 파도가 자동으로 시작됩니다' : '자동 진행 꺼짐 - 버튼/스페이스로 시작');
+      return;
+    }
     for (const f of FORM_BTNS){
       if (inRect(p, f)){ G.formation = f.id; flashMsg('진형: ' + f.name); return; }
     }
@@ -1046,11 +1055,14 @@ function drawHUD(){
     ctx.fillText(G.msg, W/2, 92);
     ctx.globalAlpha = 1;
   }
-  if (G.phase === 'shop' && G.autoTimer > 0){
+  if (G.phase === 'shop'){
     ctx.fillStyle = 'rgba(207,224,255,0.8)';
     ctx.font = '13px "Noto Sans KR",sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('다음 파도까지 ' + Math.ceil(G.autoTimer) + '초 (스페이스 = 바로 시작)', W/2, SHOP_Y - 46);
+    if (G.autoNext && G.autoTimer > 0)
+      ctx.fillText('다음 파도까지 ' + Math.ceil(G.autoTimer) + '초 (스페이스 = 바로 시작)', W/2, SHOP_Y - 46);
+    else
+      ctx.fillText('준비되면 파도 시작 버튼 또는 스페이스를 누르세요', W/2, SHOP_Y - 46);
   }
 }
 
@@ -1143,6 +1155,7 @@ function drawShop(){
   }
   drawButton(REROLL_BTN, '리롤 2G', false);
   drawButton(START_BTN, '파도 시작 ▶', true);
+  drawButton(AUTO_BTN, '자동 진행 ' + (G.autoNext ? 'ON' : 'OFF'), G.autoNext);
 }
 
 function drawTitle(){
