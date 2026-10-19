@@ -936,6 +936,10 @@ canvas.addEventListener('pointerdown', e => {
     if (inRect(p, OVER_BTN)){ newRun(); return; }
     if (inRect(p, RESET_BTN)){
       if (G.resetConfirmT > 0){
+        // pagehide의 재저장을 막기 위해 메모리 상태부터 초기화
+        G.meta = { glimmer: 0, best: 0, totalRuns: 0, upgrades: {}, lastSeen: 0 };
+        G.savedRun = null;
+        G.phase = 'title';
         localStorage.removeItem('abyss_lantern_meta');
         localStorage.removeItem('abyss_lantern_run');
         localStorage.removeItem('abyss_lantern_best');
