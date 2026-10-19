@@ -97,6 +97,13 @@ const FORMATIONS = [
   { id:'spread', name:'산개' },
 ];
 
+// ---------- 액티브 스킬 데이터 ----------
+const SKILLS = [
+  { id: 'nova', key: '1', name: '심연 폭발', cd: 12, color: '#ff9a5a', radius: 130 },
+  { id: 'beam', key: '2', name: '광휘 빛줄기', cd: 16, color: '#ffe9a8', radius: 0 },
+  { id: 'slow', key: '3', name: '시간의 늪', cd: 22, color: '#8fe2ff', radius: 165 },
+];
+
 // ---------- 상태 ----------
 const G = {
   phase: 'title',       // title | shop | combat | over
@@ -121,6 +128,10 @@ const G = {
   spawnTimer: 0,
   waveActive: false,
   autoTimer: 0,
+  skills: SKILLS.map(sk => ({ ...sk, t: 0 })),
+  aiming: -1,
+  skillFx: [],
+  slowFields: [],
   autoNext: localStorage.getItem('abyss_lantern_autonext') === '1',
   hoverCard: -1,
   trauma: 0,
@@ -280,6 +291,7 @@ function endWave(){
   G.gold += bonus;
   G.stats.earned += bonus;
   G.phase = 'shop';
+  G.aiming = -1;
   G.autoTimer = G.autoNext ? 10 : 0;
   rollShop();
   flashMsg('파도 ' + G.wave + ' 클리어! +' + bonus + '골드 (이자 +' + interest + ')');
@@ -434,6 +446,9 @@ function updateCombat(dt){
   }
   const L = G.leader;
 
+  // 위임 모드: 액티브 스킬 자동 발동
+  if (G.control === 'delegate') autoCast();
+
   // 유닛 공격
   for (const u of G.units){
     u.cool -= dt;
@@ -516,9 +531,11 @@ function updateCombat(dt){
     e.sx += e.sxV * dt;
     const d = dist(e.x, e.y, L.x, L.y);
     if (d > 26 + e.r + 4){
+      let spMul = 1;
+      for (const f of G.slowFields){ if (dist(e.x, e.y, f.x, f.y) < f.r + e.r){ spMul = 0.45; break; } }
       const a = Math.atan2(L.y - e.y, L.x - e.x);
-      e.x += Math.cos(a) * e.spd * dt;
-      e.y += Math.sin(a) * e.spd * dt;
+      e.x += Math.cos(a) * e.spd * spMul * dt;
+      e.y += Math.sin(a) * e.spd * spMul * dt;
     } else {
       e.atkT -= dt;
       if (e.atkT <= 0){
@@ -608,12 +625,92 @@ function addDmgNum(x, y, val, color, scale){
 }
 function flashMsg(m){ G.msg = m; G.msgT = 2.2; }
 
+// ---------- 액티브 스킬 ----------
+function castSkill(i, tx, ty){
+  const s = G.skills[i];
+  if (!s || s.t > 0 || G.phase !== 'combat') return false;
+  tx = clamp(tx, 10, W - 10); ty = clamp(ty, 46, SHOP_Y - 40);
+  s.t = s.cd;
+  const L = G.leader;
+  if (s.id === 'nova'){
+    const R = s.radius, dmg = 45 + G.wave * 6;
+    burst(tx, ty, '#ff9a5a', 42, 3.6);
+    burst(tx, ty, '#ffd24a', 18, 2.2);
+    ringFx(tx, ty, R, '#ff9a5a');
+    ringFx(tx, ty, R * 0.55, '#ffe9a8');
+    for (const e of G.enemies){
+      if (dist(tx, ty, e.x, e.y) <= R + e.r){
+        hurtEnemy(e, dmg, tx, ty);
+        e.kbx *= 3; e.kby *= 3; // 폭발 넉백 강화
+      }
+    }
+    G.skillFx.push({ kind: 'ring', x: tx, y: ty, r: R, color: '#ff9a5a', life: 0.35, maxlife: 0.35 });
+    G.trauma = Math.min(G.trauma + 0.55, 1);
+    G.hitstop = Math.max(G.hitstop, 0.09);
+  } else if (s.id === 'beam'){
+    const dmg = 70 + G.wave * 8, LEN = 760, HALF_W = 24;
+    const a = Math.atan2(ty - L.y, tx - L.x);
+    const x2 = L.x + Math.cos(a) * LEN, y2 = L.y + Math.sin(a) * LEN;
+    for (const e of G.enemies){
+      const dx = x2 - L.x, dy = y2 - L.y, len2 = dx * dx + dy * dy;
+      let tt = ((e.x - L.x) * dx + (e.y - L.y) * dy) / len2;
+      tt = clamp(tt, 0, 1);
+      if (dist(L.x + dx * tt, L.y + dy * tt, e.x, e.y) < e.r + HALF_W) hurtEnemy(e, dmg, L.x, L.y);
+    }
+    for (let k = 0; k < 26; k++){
+      const d = rand(40, LEN * 0.9);
+      G.particles.push(mkP(L.x + Math.cos(a) * d + rand(-10, 10), L.y + Math.sin(a) * d + rand(-10, 10),
+        Math.cos(a + Math.PI/2) * rand(-70, 70), Math.sin(a + Math.PI/2) * rand(-70, 70), rand(0.2, 0.45), '#ffe9a8', rand(2, 4)));
+    }
+    G.skillFx.push({ kind: 'beam', x1: L.x, y1: L.y, x2, y2, life: 0.3, maxlife: 0.3 });
+    G.trauma = Math.min(G.trauma + 0.6, 1);
+    G.hitstop = Math.max(G.hitstop, 0.1);
+  } else if (s.id === 'slow'){
+    const R = s.radius;
+    G.slowFields.push({ x: tx, y: ty, r: R, life: 5, maxlife: 5 });
+    ringFx(tx, ty, R, '#8fe2ff');
+    burst(tx, ty, '#8fe2ff', 24, 1.8);
+    G.trauma = Math.min(G.trauma + 0.3, 1);
+    G.hitstop = Math.max(G.hitstop, 0.06);
+  }
+  burst(L.x, L.y, s.color, 8, 1.6); // 등불 발화 스파크
+  return true;
+}
+function bestCluster(){
+  let best = null, bestN = 0;
+  for (const e of G.enemies){
+    if (e.hp <= 0) continue;
+    let n = 0, cx = 0, cy = 0;
+    for (const o of G.enemies){
+      if (o.hp > 0 && dist(e.x, e.y, o.x, o.y) < 120){ n++; cx += o.x; cy += o.y; }
+    }
+    if (n > bestN){ bestN = n; best = { x: cx / n, y: cy / n }; }
+  }
+  return best ? { x: best.x, y: best.y, n: bestN } : null;
+}
+function autoCast(){
+  if (G.enemies.length < 2) return;
+  const c = bestCluster();
+  if (!c) return;
+  if (G.skills[0].t <= 0 && c.n >= 2) castSkill(0, c.x, c.y);
+  else if (G.skills[1].t <= 0 && c.n >= 3) castSkill(1, c.x, c.y);
+  else if (G.skills[2].t <= 0 && c.n >= 4) castSkill(2, c.x, c.y);
+}
+function tryAim(i){
+  const s = G.skills[i];
+  if (G.aiming === i){ G.aiming = -1; return; }
+  if (s.t > 0){ flashMsg(s.name + ' 쿨다운 ' + Math.ceil(s.t) + '초'); return; }
+  G.aiming = i;
+  flashMsg(s.name + ' 조준 - 클릭/탭으로 발동, ESC 취소');
+}
+
 // ---------- UI 레이아웃 ----------
 const SHOP_Y = 516, CARD_W = 122, CARD_H = 106, CARD_X0 = 18, CARD_GAP = 10;
 function cardRect(i){ return { x: CARD_X0 + i * (CARD_W + CARD_GAP), y: SHOP_Y + 8, w: CARD_W, h: CARD_H }; }
 const REROLL_BTN = { x: 686, y: SHOP_Y + 40, w: 92, h: 40 };
 const START_BTN  = { x: 788, y: SHOP_Y + 40, w: 104, h: 40 };
 const AUTO_BTN   = { x: 900, y: SHOP_Y + 40, w: 106, h: 40 };
+const SKILL_BTNS = SKILLS.map((sk, i) => ({ x: W/2 - 111 + i * 76, y: H - 58, w: 70, h: 50 }));
 const BEHAVE_BTNS = BEHAVIORS.map((b, i) => ({ x: 638 + i * 96, y: 44, w: 90, h: 26, id: b.id, name: b.name }));
 const FORM_BTNS = FORMATIONS.map((f, i) => ({ x: 18 + i * 88, y: SHOP_Y - 36, w: 80, h: 28, id: f.id, name: f.name }));
 function rosterRects(){
@@ -681,6 +778,16 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
   if (G.phase === 'combat'){
+    // 스킬 버튼 (모바일 탭 지원)
+    for (let i = 0; i < 3; i++){
+      if (inRect(p, SKILL_BTNS[i])){ tryAim(i); return; }
+    }
+    // 조준 중 클릭/탭 = 발동
+    if (G.aiming >= 0){
+      castSkill(G.aiming, p.x, p.y);
+      G.aiming = -1;
+      return;
+    }
     // 아레나 클릭/드래그 = 수동 조종
     if (p.y < SHOP_Y - 30){
       G.mouse.down = true;
@@ -698,6 +805,8 @@ window.addEventListener('keydown', e => {
     G.control = 'manual';
     G.lastManual = G.time;
   }
+  if (G.phase === 'combat' && ['1', '2', '3'].includes(k)) tryAim(parseInt(k, 10) - 1);
+  if (k === 'escape') G.aiming = -1;
   if (e.key === ' '){
     e.preventDefault();
     if (G.phase === 'shop') startWave();
@@ -719,6 +828,8 @@ function newRun(){
   G.stats = { kills: 0, earned: 0 };
   G.trauma = 0; G.hitstop = 0;
   G.control = 'delegate'; G.behavior = 'attack';
+  for (const sk of G.skills) sk.t = 0;
+  G.aiming = -1; G.skillFx = []; G.slowFields = [];
   G.phase = 'shop';
   G.autoTimer = 0;
   rollShop();
@@ -796,9 +907,11 @@ function draw(){
   drawUnits();
   drawLantern();
   drawProjectiles();
+  drawSkillFx();
   drawParticles();
   drawDmgNums();
   drawVignette();
+  if (G.phase === 'combat'){ drawAim(); drawSkillBar(); }
   drawHUD();
   if (G.phase === 'shop') drawShop();
   if (G.phase === 'over') drawOver();
@@ -989,6 +1102,106 @@ function drawVignette(){
   ctx.fillRect(-20, -20, W + 40, H + 40);
 }
 
+function drawSkillFx(){
+  for (const f of G.skillFx){
+    const a = clamp(f.life / f.maxlife, 0, 1);
+    if (f.kind === 'beam'){
+      ctx.globalAlpha = a * 0.35;
+      ctx.strokeStyle = '#ffb44a';
+      ctx.lineWidth = 30;
+      ctx.beginPath(); ctx.moveTo(f.x1, f.y1); ctx.lineTo(f.x2, f.y2); ctx.stroke();
+      ctx.globalAlpha = a * 0.9;
+      ctx.strokeStyle = '#fff6da';
+      ctx.lineWidth = 8;
+      ctx.beginPath(); ctx.moveTo(f.x1, f.y1); ctx.lineTo(f.x2, f.y2); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    } else if (f.kind === 'ring'){
+      ctx.globalAlpha = a * 0.8;
+      ctx.strokeStyle = f.color;
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (1.15 - a * 0.15), 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    }
+  }
+  for (const f of G.slowFields){
+    const a = clamp(f.life / f.maxlife, 0, 1);
+    ctx.globalAlpha = 0.14 * a + 0.05;
+    ctx.fillStyle = '#8fe2ff';
+    ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 0.6 * a;
+    ctx.strokeStyle = '#8fe2ff';
+    ctx.setLineDash([8, 8]);
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(f.x, f.y, f.r, G.time * 0.8, G.time * 0.8 + TAU); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1; ctx.lineWidth = 1;
+  }
+}
+function drawAim(){
+  if (G.aiming < 0) return;
+  const s = G.skills[G.aiming];
+  const m = G.mouse, L = G.leader;
+  ctx.fillStyle = 'rgba(2,4,12,0.35)';
+  ctx.fillRect(0, 40, W, SHOP_Y - 70);
+  ctx.strokeStyle = s.color;
+  ctx.fillStyle = s.color;
+  if (s.id === 'beam'){
+    const a = Math.atan2(m.y - L.y, m.x - L.x);
+    ctx.globalAlpha = 0.5;
+    ctx.setLineDash([10, 8]);
+    ctx.lineWidth = 20;
+    ctx.beginPath(); ctx.moveTo(L.x, L.y); ctx.lineTo(L.x + Math.cos(a) * 760, L.y + Math.sin(a) * 760); ctx.stroke();
+    ctx.setLineDash([]); ctx.lineWidth = 1; ctx.globalAlpha = 1;
+  } else {
+    ctx.globalAlpha = 0.15;
+    ctx.beginPath(); ctx.arc(m.x, m.y, s.radius, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 0.85;
+    ctx.setLineDash([6, 6]);
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(m.x, m.y, s.radius, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]); ctx.lineWidth = 1; ctx.globalAlpha = 1;
+  }
+  ctx.font = 'bold 13px "Noto Sans KR",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(s.name + ' - 클릭/탭으로 발동 (ESC 취소)', W/2, SHOP_Y - 46);
+}
+function drawSkillBar(){
+  for (let i = 0; i < 3; i++){
+    const r = SKILL_BTNS[i], s = G.skills[i];
+    const ready = s.t <= 0, aiming = G.aiming === i;
+    ctx.beginPath();
+    ctx.roundRect(r.x, r.y, r.w, r.h, 8);
+    ctx.fillStyle = aiming ? 'rgba(255,210,74,0.3)' : ready ? 'rgba(40,56,96,0.75)' : 'rgba(20,28,50,0.75)';
+    ctx.fill();
+    ctx.strokeStyle = aiming ? '#ffd24a' : ready ? s.color : 'rgba(90,110,150,0.5)';
+    ctx.lineWidth = aiming ? 2 : 1.2;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    // 아이콘
+    ctx.fillStyle = ready || aiming ? s.color : 'rgba(110,125,155,0.7)';
+    const cx = r.x + r.w/2, cy = r.y + 17;
+    if (s.id === 'nova'){ ctx.beginPath(); ctx.arc(cx, cy, 7, 0, TAU); ctx.fill(); ctx.beginPath(); ctx.arc(cx, cy, 11, 0, TAU); ctx.strokeStyle = ctx.fillStyle; ctx.stroke(); }
+    else if (s.id === 'beam'){ ctx.fillRect(cx - 10, cy - 2.5, 20, 5); }
+    else { ctx.beginPath(); ctx.arc(cx, cy, 8, 0, TAU); ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 2.5; ctx.stroke(); ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx, cy, 3, 0, TAU); ctx.fill(); }
+    // 이름 + 키
+    ctx.font = '10px "Noto Sans KR",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(200,214,240,0.9)';
+    ctx.fillText('[' + s.key + '] ' + s.name, cx, r.y + 38);
+    // 쿨다운 오버레이
+    if (!ready){
+      const ratio = s.t / s.cd;
+      ctx.fillStyle = 'rgba(4,8,18,0.72)';
+      ctx.beginPath();
+      ctx.roundRect(r.x, r.y, r.w, r.h * ratio, 8);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 14px "Noto Sans KR",sans-serif';
+      ctx.fillText(Math.ceil(s.t) + '', cx, r.y + 24);
+    }
+  }
+}
+
 function drawHUD(){
   ctx.fillStyle = 'rgba(4,8,18,0.75)';
   ctx.fillRect(0, 0, W, 40);
@@ -1176,6 +1389,7 @@ function drawTitle(){
   ctx.font = '14px "Noto Sans KR",sans-serif';
   ctx.fillStyle = 'rgba(140,160,200,0.8)';
   ctx.fillText('전투는 자동 — 직접 이끌거나(마우스/WASD) 위임하세요(스페이스 전환)', W/2, 332);
+  ctx.fillText('액티브 스킬: 1/2/3 조준 후 클릭 (위임 시 자동 발동)', W/2, 356);
   drawButton(TITLE_BTN, '시작하기', true);
   if (G.best > 0){
     ctx.fillStyle = 'rgba(255,210,74,0.8)';
@@ -1184,7 +1398,7 @@ function drawTitle(){
   }
   ctx.fillStyle = 'rgba(120,140,180,0.5)';
   ctx.font = '11px "Noto Sans KR",sans-serif';
-  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R2', W/2, H - 24);
+  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R3', W/2, H - 24);
 }
 
 function drawOver(){
@@ -1221,6 +1435,17 @@ function loop(now){
     updateUnits(dt);
   }
   if (G.phase === 'combat') updateCombat(dt);
+  if (G.phase === 'combat' || G.phase === 'shop'){
+    for (const sk of G.skills) if (sk.t > 0) sk.t = Math.max(0, sk.t - dt);
+  }
+  for (let i = G.slowFields.length - 1; i >= 0; i--){
+    const f = G.slowFields[i]; f.life -= dt;
+    if (f.life <= 0) G.slowFields.splice(i, 1);
+  }
+  for (let i = G.skillFx.length - 1; i >= 0; i--){
+    const f = G.skillFx[i]; f.life -= dt;
+    if (f.life <= 0) G.skillFx.splice(i, 1);
+  }
   if (G.phase === 'shop' && G.autoTimer > 0){
     G.autoTimer -= dt;
     if (G.autoTimer <= 0) startWave();
