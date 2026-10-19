@@ -1032,10 +1032,12 @@ function drawHUD(){
     ctx.fillText(b.name, b.x + b.w/2, b.y + 17);
   }
   // 조종 상태
-  ctx.fillStyle = G.control === 'manual' ? '#8fe2ff' : 'rgba(140,170,220,0.7)';
-  ctx.font = '11px "Noto Sans KR",sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText(G.control === 'manual' ? '[수동 조종] 스페이스: 위임 복귀' : '[위임 중] 스페이스/드래그: 직접 조종', 16, 60);
+  if (G.phase === 'combat'){
+    ctx.fillStyle = G.control === 'manual' ? '#8fe2ff' : 'rgba(140,170,220,0.7)';
+    ctx.font = '11px "Noto Sans KR",sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(G.control === 'manual' ? '[수동 조종] 스페이스: 위임 복귀' : '[위임 중] 스페이스/드래그: 직접 조종', 16, 60);
+  }
   if (G.msgT > 0){
     ctx.globalAlpha = clamp(G.msgT / 0.4, 0, 1);
     ctx.fillStyle = '#ffe9b0';
@@ -1134,11 +1136,10 @@ function drawShop(){
     ctx.textAlign = 'center';
     ctx.fillText(t.name, r.x + r.w/2, r.y + 68);
     ctx.fillStyle = 'rgba(190,205,235,0.85)';
-    ctx.font = '11px "Noto Sans KR",sans-serif';
-    ctx.fillText('피해 ' + t.dmg + ' · 간격 ' + t.cd + 's · 사거리 ' + t.rng, r.x + r.w/2, r.y + 84);
-    ctx.fillStyle = 'rgba(150,170,210,0.7)';
     ctx.font = '10px "Noto Sans KR",sans-serif';
-    ctx.fillText(t.desc, r.x + r.w/2, r.y + 99);
+    ctx.fillText('피해 ' + t.dmg + ' · 간격 ' + t.cd + 's', r.x + r.w/2, r.y + 83);
+    ctx.fillText('사거리 ' + t.rng, r.x + r.w/2, r.y + 96);
+    ctx.fillStyle = 'rgba(150,170,210,0.7)';
   }
   drawButton(REROLL_BTN, '리롤 2G', false);
   drawButton(START_BTN, '파도 시작 ▶', true);
