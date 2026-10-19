@@ -1510,7 +1510,7 @@ function drawHUD(){
     ctx.textAlign = 'left';
     ctx.fillText(G.control === 'manual' ? '[수동 조종] 스페이스: 위임 복귀' : '[위임 중] 스페이스/드래그: 직접 조종', 16, 60);
   }
-  if (G.msgT > 0){
+  if (G.msgT > 0 && G.phase !== 'over'){
     ctx.globalAlpha = clamp(G.msgT / 0.4, 0, 1);
     ctx.fillStyle = '#ffe9b0';
     ctx.font = 'bold 15px "Noto Sans KR",sans-serif';
