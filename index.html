@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>심연의 등불 — Abyss Lantern</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0;background:#02030a;height:100%;overflow:hidden;
+    font-family:"Noto Sans KR","Pretendard","Apple SD Gothic Neo","Malgun Gothic",sans-serif;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  canvas{background:#05070f;cursor:default;touch-action:none;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="1024" height="640"></canvas></div>
+<script>
+"use strict";
+/* ============================================================
+   심연의 등불 (Abyss Lantern) — R1 최소 루프
+   코어 수호 + 진형 슬롯 + 자동 전투 + 기본 타격감
+   단일 파일 / Canvas 2D / 서버리스 정적 빌드
+   ============================================================ */
+
+// ---------- 기본 설정 ----------
+const W = 1024, H = 640;
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let viewScale = 1, viewOX = 0, viewOY = 0;
+
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const ww = window.innerWidth, wh = window.innerHeight;
+  const s = Math.min(ww / W, wh / H);
+  canvas.style.width  = (W * s) + 'px';
+  canvas.style.height = (H * s) + 'px';
+  canvas.width  = Math.round(W * s * dpr);
+  canvas.height = Math.round(H * s * dpr);
+  viewScale = s * dpr;
+  const rect = canvas.getBoundingClientRect();
+  viewOX = rect.left; viewOY = rect.top;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- 유틸 ----------
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+const TAU = Math.PI * 2;
+
+// ---------- 게임 데이터 ----------
+const CLASSES = {
+  sword: { name: '검성',   color: '#ff9a3c' },
+  archer:{ name: '궁수',   color: '#8fe26a' },
+  mage:  { name: '마법사', color: '#5aa8ff' },
+};
+const SYNERGY = {
+  sword:  { tiers: [2, 4], desc: ['검성 피해 +20%', '검성 피해 +50%'] },
+  archer: { tiers: [2, 4], desc: ['궁수 공격속도 +25%', '궁수 공격속도 +60%'] },
+  mage:   { tiers: [2, 4], desc: ['마법사 광역 범위 +25%', '마법사 광역 범위 +50%'] },
+};
+const UNIT_TYPES = [
+  { id:'squire',  name:'견습 검사',  cls:'sword',  cost:1, rng:85,  dmg:9,  cd:0.85, melee:true,  desc:'주변 적을 베는 근접 공격' },
+  { id:'berserk', name:'광전사',     cls:'sword',  cost:2, rng:90,  dmg:22, cd:1.35, melee:true,  desc:'느리지만 강력한 일격' },
+  { id:'archer',  name:'궁수',       cls:'archer', cost:1, rng:250, dmg:6,  cd:0.70, melee:false, desc:'긴 사거리의 단일 화살' },
+  { id:'rapid',   name:'속사 궁수',  cls:'archer', cost:3, rng:260, dmg:7,  cd:0.36, melee:false, desc:'매우 빠른 연사' },
+  { id:'appmage', name:'견습 마도사',cls:'mage',   cost:2, rng:205, dmg:8,  cd:1.20, melee:false, aoe:42, desc:'작은 광역 마법탄' },
+  { id:'pyro',    name:'화염술사',   cls:'mage',   cost:3, rng:215, dmg:15, cd:1.80, melee:false, aoe:72, desc:'넓은 화염 폭발' },
+];
+const ENEMY_TYPES = {
+  mob:   { name:'어둠 덩어리', hp:22,  spd:46, dmg:4, r:11, gold:1, color:'#6a4fd8' },
+  fast:  { name:'속공체',      hp:13,  spd:86, dmg:2, r:8,  gold:1, color:'#b04fd8' },
+  tank:  { name:'심연 괴물',   hp:130, spd:24, dmg:9, r:17, gold:4, color:'#3f2f8f' },
+};
+
+// ---------- 게임 상태 ----------
+const G = {
+  phase: 'title',          // title | shop | combat | over
+  gold: 10,
+  wave: 0,
+  best: parseInt(localStorage.getItem('abyss_lantern_best') || '0', 10),
+  core: { x: W/2, y: H/2 - 20, r: 30, hp: 100, maxhp: 100, flash: 0 },
+  slots: [],
+  shop: [],
+  enemies: [],
+  projectiles: [],
+  particles: [],
+  dmgNums: [],
+  spawnQueue: [],
+  spawnTimer: 0,
+  waveActive: false,
+  autoTimer: 0,
+  placing: null,           // {typeId} 배치 모드
+  hoverSlot: -1,
+  hoverCard: -1,
+  trauma: 0,
+  hitstop: 0,
+  time: 0,
+  beamAngle: 0,
+  msg: '', msgT: 0,
+  fps: 0, fpsAcc: 0, fpsCnt: 0, fpsT: 0,
+  stats: { kills: 0, earned: 0 },
+};
+
+// 슬롯 생성: 내륜 6 (근접 권장), 외륜 10
+(function buildSlots(){
+  const inner = 6, outer = 10;
+  for (let i = 0; i < inner; i++){
+    const a = -Math.PI/2 + i * TAU / inner;
+    G.slots.push({ ring:0, x: G.core.x + Math.cos(a)*95,  y: G.core.y + Math.sin(a)*95,  unit:null });
+  }
+  for (let i = 0; i < outer; i++){
+    const a = -Math.PI/2 + (i + 0.5) * TAU / outer;
+    G.slots.push({ ring:1, x: G.core.x + Math.cos(a)*168, y: G.core.y + Math.sin(a)*168, unit:null });
+  }
+})();
+
+// ---------- 시너지 ----------
+function classCounts(){
+  const c = { sword:0, archer:0, mage:0 };
+  for (const s of G.slots) if (s.unit) c[s.unit.cls]++;
+  return c;
+}
+function synergyLevel(cls){
+  const n = classCounts()[cls];
+  const t = SYNERGY[cls].tiers;
+  if (n >= t[1]) return 2;
+  if (n >= t[0]) return 1;
+  return 0;
+}
+function unitDmg(u){
+  let d = u.dmg * Math.pow(2, u.star - 1);
+  if (u.cls === 'sword'){ const l = synergyLevel('sword'); d *= l === 2 ? 1.5 : l === 1 ? 1.2 : 1; }
+  return d;
+}
+function unitCd(u){
+  let c = u.cd;
+  if (u.cls === 'archer'){ const l = synergyLevel('archer'); c /= l === 2 ? 1.6 : l === 1 ? 1.25 : 1; }
+  return c;
+}
+function unitAoe(u){
+  let a = u.aoe || 0;
+  if (u.cls === 'mage' && a > 0){ const l = synergyLevel('mage'); a *= l === 2 ? 1.5 : l === 1 ? 1.25 : 1; }
+  return a;
+}
+
+// ---------- 상점 ----------
+function rollShop(){
+  G.shop = [];
+  for (let i = 0; i < 5; i++){
+    const pool = [];
+    for (const t of UNIT_TYPES){
+      const w = t.cost === 1 ? 5 : t.cost === 2 ? 3 : 2;
+      for (let k = 0; k < w; k++) pool.push(t);
+    }
+    G.shop.push(pool[Math.floor(Math.random() * pool.length)]);
+  }
+}
+function buyCard(i){
+  const t = G.shop[i];
+  if (!t) return;
+  if (G.gold < t.cost){ flashMsg('골드가 부족합니다'); return; }
+  // 합체 체크: 같은 타입+같은 등급 2개가 보드에 있으면 구매 즉시 합체 (★1→★2→★3)
+  let mergeStar = 0;
+  for (const st of [1, 2]){
+    if (G.slots.filter(x => x.unit && x.unit.id === t.id && x.unit.star === st).length >= 2){ mergeStar = st; break; }
+  }
+  if (mergeStar > 0){
+    const same = G.slots.filter(x => x.unit && x.unit.id === t.id && x.unit.star === mergeStar);
+    G.gold -= t.cost;
+    const keep = same[0];
+    same[1].unit = null;
+    keep.unit.star = Math.min(3, keep.unit.star + 1);
+    burst(keep.x, keep.y, '#ffd27a', 24, 3);
+    addDmgNum(keep.x, keep.y - 18, '★' + keep.unit.star + ' 합체!', '#ffd27a', 1.4);
+    G.shop[i] = null;
+    G.stats.earned += 0;
+    return;
+  }
+  // 빈 슬롯 확인
+  if (!G.slots.some(s => !s.unit)){ flashMsg('빈 슬롯이 없습니다'); return; }
+  G.gold -= t.cost;
+  G.shop[i] = null;
+  G.placing = { typeId: t.id };
+  flashMsg(t.name + ' — 배치할 슬롯을 클릭하세요');
+}
+function placeUnit(slotIdx){
+  const s = G.slots[slotIdx];
+  if (!s || s.unit || !G.placing) return;
+  const t = UNIT_TYPES.find(u => u.id === G.placing.typeId);
+  s.unit = { ...t, star: 1, cool: rand(0, 0.3) };
+  burst(s.x, s.y, CLASSES[t.cls].color, 16, 2.5);
+  G.placing = null;
+}
+
+// ---------- 웨이브 ----------
+function startWave(){
+  G.wave++;
+  const n = G.wave;
+  const q = [];
+  const total = 4 + Math.ceil(n * 2.5);
+  for (let i = 0; i < total; i++){
+    let kind = 'mob';
+    if (n >= 3 && Math.random() < 0.25) kind = 'fast';
+    if (n >= 4 && i === total - 1 && n % 4 === 0) kind = 'tank';
+    if (n >= 6 && Math.random() < 0.12) kind = 'tank';
+    q.push(kind);
+  }
+  G.spawnQueue = q;
+  G.spawnTimer = 0.5;
+  G.waveActive = true;
+  G.phase = 'combat';
+  G.autoTimer = 0;
+}
+function spawnEnemy(kind){
+  const base = ENEMY_TYPES[kind];
+  const scale = 1 + 0.22 * (G.wave - 1);
+  // 스폰 위치: 화면 가장자리 랜덤
+  let x, y; const side = Math.floor(rand(0, 4));
+  if (side === 0){ x = rand(0, W); y = -20; }
+  else if (side === 1){ x = rand(0, W); y = H + 20; }
+  else if (side === 2){ x = -20; y = rand(0, H); }
+  else { x = W + 20; y = rand(0, H); }
+  G.enemies.push({
+    kind, x, y,
+    hp: base.hp * scale, maxhp: base.hp * scale,
+    spd: base.spd * rand(0.9, 1.1), dmg: base.dmg * (1 + 0.1 * (G.wave - 1)),
+    r: base.r, gold: base.gold, color: base.color,
+    atkT: 0, flash: 0, kbx: 0, kby: 0,
+  });
+}
+function endWave(){
+  G.waveActive = false;
+  const interest = Math.min(Math.floor(G.gold / 10), 5);
+  const bonus = 3 + interest;
+  G.gold += bonus;
+  G.stats.earned += bonus;
+  G.phase = 'shop';
+  G.autoTimer = 8;
+  rollShop();
+  flashMsg('파도 ' + G.wave + ' 클리어! +' + bonus + '골드 (이자 +' + interest + ')');
+}
+
+// ---------- 전투 ----------
+function updateCombat(dt){
+  // 스폰
+  if (G.spawnQueue.length > 0){
+    G.spawnTimer -= dt;
+    if (G.spawnTimer <= 0){
+      spawnEnemy(G.spawnQueue.shift());
+      G.spawnTimer = clamp(1.1 - G.wave * 0.04, 0.35, 1.1);
+    }
+  } else if (G.enemies.length === 0 && G.waveActive){
+    endWave();
+    return;
+  }
+  const c = G.core;
+
+  // 유닛 공격
+  for (const s of G.slots){
+    const u = s.unit;
+    if (!u) continue;
+    u.cool -= dt;
+    if (u.cool > 0) continue;
+    // 가장 가까운 적 (사거리 내)
+    let tgt = null, best = 1e9;
+    for (const e of G.enemies){
+      const d = dist(s.x, s.y, e.x, e.y);
+      if (d < u.rng && d < best){ best = d; tgt = e; }
+    }
+    if (!tgt) continue;
+    u.cool = unitCd(u);
+    if (u.melee){
+      // 근접: 사거리 내 모든 적에 범위 참격
+      let hitAny = false;
+      for (const e of G.enemies){
+        if (dist(s.x, s.y, e.x, e.y) <= u.rng + e.r){
+          hurtEnemy(e, unitDmg(u), s.x, s.y);
+          hitAny = true;
+        }
+      }
+      if (hitAny){
+        slashFx(s.x, s.y, Math.atan2(tgt.y - s.y, tgt.x - s.x), CLASSES[u.cls].color);
+        G.trauma = Math.min(G.trauma + 0.06, 0.5);
+      }
+    } else {
+      const a = Math.atan2(tgt.y - s.y, tgt.x - s.x);
+      const spd = 420;
+      G.projectiles.push({
+        x: s.x, y: s.y,
+        vx: Math.cos(a) * spd, vy: Math.sin(a) * spd,
+        tgt, dmg: unitDmg(u), aoe: unitAoe(u),
+        color: u.cls === 'mage' ? '#6ab0ff' : '#bfff8a',
+        mage: u.cls === 'mage', life: 2.2,
+      });
+    }
+  }
+
+  // 투사체
+  for (let i = G.projectiles.length - 1; i >= 0; i--){
+    const p = G.projectiles[i];
+    p.life -= dt;
+    if (p.tgt && p.tgt.hp > 0){
+      const a = Math.atan2(p.tgt.y - p.y, p.tgt.x - p.x);
+      const spd = 420;
+      p.vx = p.vx * 0.85 + Math.cos(a) * spd * 0.15;
+      p.vy = p.vy * 0.85 + Math.sin(a) * spd * 0.15;
+    }
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    if (Math.random() < 0.5) G.particles.push(mkP(p.x, p.y, 0, 0, 0.18, p.color, 2));
+    let hit = null;
+    for (const e of G.enemies){
+      if (dist(p.x, p.y, e.x, e.y) < e.r + 4){ hit = e; break; }
+    }
+    if (hit || p.life <= 0){
+      if (hit){
+        if (p.aoe > 0){
+          burst(p.x, p.y, '#ff9a5a', 18, 2.2);
+          ringFx(p.x, p.y, p.aoe, '#ff9a5a');
+          for (const e of G.enemies){
+            if (dist(p.x, p.y, e.x, e.y) <= p.aoe + e.r) hurtEnemy(e, p.dmg, p.x, p.y);
+          }
+          G.trauma = Math.min(G.trauma + 0.12, 0.6);
+        } else {
+          hurtEnemy(hit, p.dmg, p.x, p.y);
+        }
+      }
+      G.projectiles.splice(i, 1);
+    }
+  }
+
+  // 적 이동/공격
+  for (let i = G.enemies.length - 1; i >= 0; i--){
+    const e = G.enemies[i];
+    if (e.flash > 0) e.flash -= dt;
+    e.x += e.kbx * dt * 8; e.y += e.kby * dt * 8;
+    e.kbx *= Math.pow(0.001, dt); e.kby *= Math.pow(0.001, dt);
+    const d = dist(e.x, e.y, c.x, c.y);
+    if (d > c.r + e.r + 4){
+      const a = Math.atan2(c.y - e.y, c.x - e.x);
+      e.x += Math.cos(a) * e.spd * dt;
+      e.y += Math.sin(a) * e.spd * dt;
+    } else {
+      e.atkT -= dt;
+      if (e.atkT <= 0){
+        e.atkT = 1.0;
+        c.hp -= e.dmg;
+        c.flash = 0.25;
+        G.trauma = Math.min(G.trauma + 0.25, 1);
+        burst(c.x + rand(-15, 15), c.y + rand(-15, 15), '#ff5a5a', 8, 2);
+        addDmgNum(c.x, c.y - 30, '-' + Math.round(e.dmg), '#ff6a6a', 1.1);
+        if (c.hp <= 0){ c.hp = 0; gameOver(); return; }
+      }
+    }
+    if (e.hp <= 0){
+      killEnemy(i);
+    }
+  }
+}
+function hurtEnemy(e, dmg, sx, sy){
+  e.hp -= dmg;
+  e.flash = 0.09;
+  const a = Math.atan2(e.y - sy, e.x - sx);
+  e.kbx += Math.cos(a) * 4; e.kby += Math.sin(a) * 4;
+  burst(e.x, e.y, '#ffe9a8', 3, 1.6);
+  addDmgNum(e.x + rand(-6, 6), e.y - e.r - 4, Math.round(dmg), dmg >= 20 ? '#ffd24a' : '#ffffff', dmg >= 20 ? 1.3 : 0.9);
+}
+function killEnemy(i){
+  const e = G.enemies[i];
+  G.enemies.splice(i, 1);
+  G.gold += e.gold;
+  G.stats.kills++;
+  G.stats.earned += e.gold;
+  burst(e.x, e.y, e.color, e.kind === 'tank' ? 26 : 12, e.kind === 'tank' ? 3 : 2);
+  ringFx(e.x, e.y, e.r * 2.2, e.color);
+  if (e.kind === 'tank'){ G.trauma = Math.min(G.trauma + 0.3, 1); G.hitstop = Math.max(G.hitstop, 0.05); }
+}
+function gameOver(){
+  G.phase = 'over';
+  if (G.wave > G.best){
+    G.best = G.wave;
+    localStorage.setItem('abyss_lantern_best', String(G.best));
+  }
+  G.trauma = 1;
+  burst(G.core.x, G.core.y, '#ffd27a', 60, 4);
+}
+
+// ---------- 이펙트 ----------
+function mkP(x, y, vx, vy, life, color, size){
+  return { x, y, vx, vy, life, maxlife: life, color, size };
+}
+function burst(x, y, color, n, spd){
+  for (let i = 0; i < n; i++){
+    if (G.particles.length > 1800) break;
+    const a = rand(0, TAU), v = rand(20, 60) * spd;
+    G.particles.push(mkP(x, y, Math.cos(a) * v, Math.sin(a) * v, rand(0.25, 0.6), color, rand(1.5, 3.5)));
+  }
+}
+function ringFx(x, y, r, color){
+  if (G.particles.length > 1800) return;
+  const n = 14;
+  for (let i = 0; i < n; i++){
+    const a = i / n * TAU;
+    G.particles.push(mkP(x, y, Math.cos(a) * r * 2.2, Math.sin(a) * r * 2.2, 0.3, color, 2));
+  }
+}
+function slashFx(x, y, ang, color){
+  for (let i = 0; i < 8; i++){
+    const a = ang + rand(-0.7, 0.7), v = rand(80, 160);
+    G.particles.push(mkP(x, y, Math.cos(a) * v, Math.sin(a) * v, rand(0.12, 0.25), color, rand(2, 4)));
+  }
+}
+function addDmgNum(x, y, val, color, scale){
+  G.dmgNums.push({ x, y, val: String(val), color, scale, life: 0.8 });
+}
+function flashMsg(m){ G.msg = m; G.msgT = 2.2; }
+
+// ---------- 입력 ----------
+function pointerPos(e){
+  const rect = canvas.getBoundingClientRect();
+  const s = rect.width / W;
+  return { x: (e.clientX - rect.left) / s, y: (e.clientY - rect.top) / s };
+}
+const SHOP_Y = 516, CARD_W = 122, CARD_H = 106, CARD_X0 = 18, CARD_GAP = 10;
+function cardRect(i){ return { x: CARD_X0 + i * (CARD_W + CARD_GAP), y: SHOP_Y + 8, w: CARD_W, h: CARD_H }; }
+const REROLL_BTN = { x: 690, y: SHOP_Y + 30, w: 90, h: 40 };
+const START_BTN  = { x: 872, y: 430, w: 132, h: 44 };
+const TITLE_BTN  = { x: W/2 - 90, y: 420, w: 180, h: 52 };
+const OVER_BTN   = { x: W/2 - 90, y: 430, w: 180, h: 52 };
+
+canvas.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  G.mouse = p;
+  G.hoverSlot = -1; G.hoverCard = -1;
+  if (G.phase === 'shop'){
+    for (let i = 0; i < G.slots.length; i++){
+      const s = G.slots[i];
+      if (dist(p.x, p.y, s.x, s.y) < 18){ G.hoverSlot = i; break; }
+    }
+    for (let i = 0; i < 5; i++){
+      const r = cardRect(i);
+      if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h){ G.hoverCard = i; break; }
+    }
+  }
+});
+canvas.addEventListener('pointerdown', e => {
+  const p = pointerPos(e);
+  if (e.button === 2){ G.placing = null; return; }
+  if (G.phase === 'title'){
+    if (inRect(p, TITLE_BTN)){ newRun(); }
+    return;
+  }
+  if (G.phase === 'over'){
+    if (inRect(p, OVER_BTN)){ newRun(); }
+    return;
+  }
+  if (G.phase === 'shop'){
+    if (inRect(p, REROLL_BTN)){
+      if (G.gold >= 2){ G.gold -= 2; rollShop(); } else flashMsg('골드가 부족합니다');
+      return;
+    }
+    if (inRect(p, START_BTN)){ startWave(); return; }
+    for (let i = 0; i < 5; i++){
+      if (inRect(p, cardRect(i))){ buyCard(i); return; }
+    }
+    if (G.placing){
+      if (G.hoverSlot >= 0) placeUnit(G.hoverSlot);
+      return;
+    }
+    // 배치된 유닛 클릭 → 들어올려 재배치
+    if (G.hoverSlot >= 0){
+      const s = G.slots[G.hoverSlot];
+      if (s.unit){
+        G.placing = { typeId: s.unit.id, star: s.unit.star, pickUp: G.hoverSlot };
+        s.unit = null;
+        flashMsg('재배치할 슬롯을 클릭하세요');
+      }
+    }
+  }
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape') G.placing = null;
+  if (e.key === ' ' && G.phase === 'shop') startWave();
+});
+function inRect(p, r){ return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h; }
+
+// placeUnit이 들어올린 유닛(등급 보존)도 처리하도록 래핑
+const _placeUnit = placeUnit;
+placeUnit = function(slotIdx){
+  const s = G.slots[slotIdx];
+  if (!s || s.unit || !G.placing) return;
+  const t = UNIT_TYPES.find(u => u.id === G.placing.typeId);
+  s.unit = { ...t, star: G.placing.star || 1, cool: rand(0, 0.3) };
+  burst(s.x, s.y, CLASSES[t.cls].color, 16, 2.5);
+  G.placing = null;
+};
+
+function newRun(){
+  G.gold = 10; G.wave = 0;
+  G.core.hp = G.core.maxhp;
+  for (const s of G.slots) s.unit = null;
+  G.enemies = []; G.projectiles = []; G.particles = []; G.dmgNums = [];
+  G.spawnQueue = []; G.waveActive = false;
+  G.stats = { kills: 0, earned: 0 };
+  G.trauma = 0; G.hitstop = 0;
+  G.phase = 'shop';
+  G.autoTimer = 0;
+  rollShop();
+  flashMsg('영웅을 고용해 코어를 지키세요');
+}
+
+// ---------- 렌더 ----------
+function draw(){
+  ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
+  // 화면 흔들림
+  const sh = G.trauma * G.trauma * 14;
+  ctx.translate(rand(-sh, sh), rand(-sh, sh));
+
+  drawBackground();
+  if (G.phase === 'title'){ drawTitle(); return; }
+  drawArena();
+  drawSlots();
+  drawEnemies();
+  drawProjectiles();
+  drawCore();
+  drawParticles();
+  drawDmgNums();
+  drawHUD();
+  if (G.phase === 'shop') drawShop();
+  if (G.phase === 'over') drawOver();
+}
+
+function drawBackground(){
+  const g = ctx.createRadialGradient(W/2, H/2, 60, W/2, H/2, 620);
+  g.addColorStop(0, '#0a1024');
+  g.addColorStop(1, '#02030a');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  // 수면 파문
+  ctx.strokeStyle = 'rgba(60,90,160,0.08)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 5; i++){
+    ctx.beginPath();
+    ctx.arc(W/2, H/2 - 20, 120 + i * 90 + Math.sin(G.time * 0.5 + i) * 6, 0, TAU);
+    ctx.stroke();
+  }
+}
+
+function drawArena(){
+  // 회전하는 등대 빛줄기
+  const c = G.core;
+  G.beamAngle += 0.003;
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  for (const off of [0, Math.PI]){
+    const a = G.beamAngle + off;
+    const grad = ctx.createLinearGradient(0, 0, Math.cos(a) * 420, Math.sin(a) * 420);
+    grad.addColorStop(0, 'rgba(255,214,140,0.10)');
+    grad.addColorStop(1, 'rgba(255,214,140,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, 420, a - 0.16, a + 0.16);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawSlots(){
+  for (let i = 0; i < G.slots.length; i++){
+    const s = G.slots[i];
+    // 슬롯 베이스
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 15, 0, TAU);
+    ctx.fillStyle = 'rgba(80,110,180,0.12)';
+    ctx.fill();
+    ctx.strokeStyle = G.hoverSlot === i ? 'rgba(255,220,150,0.9)' : 'rgba(90,130,200,0.35)';
+    ctx.lineWidth = G.hoverSlot === i ? 2 : 1;
+    ctx.stroke();
+    if (s.unit){
+      const u = s.unit;
+      const col = CLASSES[u.cls].color;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 12, 0, TAU);
+      ctx.fillStyle = col;
+      ctx.globalAlpha = 0.9;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = u.star >= 2 ? 2.5 : 1;
+      ctx.stroke();
+      // 등급 별
+      ctx.fillStyle = '#ffd24a';
+      ctx.font = 'bold 10px "Noto Sans KR",sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('★'.repeat(u.star), s.x, s.y - 18);
+      // 클래스 이니셜
+      ctx.fillStyle = '#081020';
+      ctx.font = 'bold 11px "Noto Sans KR",sans-serif';
+      ctx.fillText(CLASSES[u.cls].name[0], s.x, s.y + 4);
+    }
+  }
+  // 배치 미리보기
+  if (G.placing && G.hoverSlot >= 0 && !G.slots[G.hoverSlot].unit){
+    const s = G.slots[G.hoverSlot];
+    const t = UNIT_TYPES.find(u => u.id === G.placing.typeId);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, t.rng, 0, TAU);
+    ctx.fillStyle = 'rgba(120,180,255,0.06)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(120,180,255,0.4)';
+    ctx.setLineDash([6, 6]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function drawEnemies(){
+  for (const e of G.enemies){
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.r, 0, TAU);
+    ctx.fillStyle = e.flash > 0 ? '#ffffff' : e.color;
+    ctx.fill();
+    // 눈
+    ctx.fillStyle = e.flash > 0 ? '#000' : '#ff4a6a';
+    ctx.beginPath();
+    ctx.arc(e.x - e.r * 0.3, e.y - e.r * 0.2, 2, 0, TAU);
+    ctx.arc(e.x + e.r * 0.3, e.y - e.r * 0.2, 2, 0, TAU);
+    ctx.fill();
+    // HP바
+    if (e.hp < e.maxhp){
+      const w = e.r * 2;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(e.x - w/2, e.y - e.r - 8, w, 3);
+      ctx.fillStyle = '#ff5a6a';
+      ctx.fillRect(e.x - w/2, e.y - e.r - 8, w * (e.hp / e.maxhp), 3);
+    }
+  }
+}
+
+function drawProjectiles(){
+  for (const p of G.projectiles){
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.mage ? 5 : 3, 0, TAU);
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 8;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+}
+
+function drawCore(){
+  const c = G.core;
+  const pulse = 1 + Math.sin(G.time * 2.4) * 0.06;
+  // 오라
+  const g = ctx.createRadialGradient(c.x, c.y, 4, c.x, c.y, 70 * pulse);
+  g.addColorStop(0, 'rgba(255,214,140,0.5)');
+  g.addColorStop(1, 'rgba(255,214,140,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, 70 * pulse, 0, TAU);
+  ctx.fill();
+  // 코어
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, c.r * (c.flash > 0 ? 1.15 : 1), 0, TAU);
+  ctx.fillStyle = c.flash > 0 ? '#fff2d8' : '#ffd27a';
+  ctx.shadowColor = '#ffd27a';
+  ctx.shadowBlur = 24;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  if (c.flash > 0) c.flash -= 0.016;
+}
+
+function drawParticles(){
+  for (let i = G.particles.length - 1; i >= 0; i--){
+    const p = G.particles[i];
+    const t = p.life / p.maxlife;
+    ctx.globalAlpha = clamp(t, 0, 1);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawDmgNums(){
+  ctx.textAlign = 'center';
+  for (const d of G.dmgNums){
+    ctx.globalAlpha = clamp(d.life / 0.8, 0, 1);
+    ctx.fillStyle = d.color;
+    ctx.font = 'bold ' + Math.round(13 * d.scale) + 'px "Noto Sans KR",sans-serif';
+    ctx.fillText(d.val, d.x, d.y);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawHUD(){
+  // 상단 바
+  ctx.fillStyle = 'rgba(4,8,18,0.75)';
+  ctx.fillRect(0, 0, W, 40);
+  ctx.fillStyle = '#ffd24a';
+  ctx.font = 'bold 16px "Noto Sans KR",sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('💰 ' + G.gold, 16, 26);
+  ctx.fillStyle = '#cfe0ff';
+  ctx.fillText('파도 ' + G.wave, 110, 26);
+  // 코어 HP
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(190, 12, 220, 16);
+  const hpr = G.core.hp / G.core.maxhp;
+  ctx.fillStyle = hpr > 0.5 ? '#ffd27a' : hpr > 0.25 ? '#ff9a4a' : '#ff5a5a';
+  ctx.fillRect(190, 12, 220 * hpr, 16);
+  ctx.fillStyle = '#081020';
+  ctx.font = 'bold 11px "Noto Sans KR",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('코어 ' + Math.ceil(G.core.hp) + ' / ' + G.core.maxhp, 300, 24);
+  // 시너지
+  const cc = classCounts();
+  ctx.textAlign = 'left';
+  ctx.font = '12px "Noto Sans KR",sans-serif';
+  let sx = 440;
+  for (const k of ['sword', 'archer', 'mage']){
+    const lv = synergyLevel(k);
+    ctx.fillStyle = lv > 0 ? CLASSES[k].color : 'rgba(140,160,200,0.45)';
+    ctx.fillText(CLASSES[k].name + ' ' + cc[k] + (lv > 0 ? ' (' + SYNERGY[k].desc[lv-1] + ')' : ''), sx, 25);
+    sx += ctx.measureText(CLASSES[k].name + ' ' + cc[k] + (lv > 0 ? ' (' + SYNERGY[k].desc[lv-1] + ')' : '')).width + 18;
+  }
+  // FPS
+  ctx.fillStyle = 'rgba(140,170,220,0.7)';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(G.fps.toFixed(0) + ' FPS', W - 12, 16);
+  // 메시지
+  if (G.msgT > 0){
+    ctx.globalAlpha = clamp(G.msgT / 0.4, 0, 1);
+    ctx.fillStyle = '#ffe9b0';
+    ctx.font = 'bold 15px "Noto Sans KR",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(G.msg, W/2, 62);
+    ctx.globalAlpha = 1;
+  }
+  // 자동 시작 카운트다운
+  if (G.phase === 'shop' && G.autoTimer > 0){
+    ctx.fillStyle = 'rgba(207,224,255,0.8)';
+    ctx.font = '13px "Noto Sans KR",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('다음 파도까지 ' + Math.ceil(G.autoTimer) + '초 (스페이스 = 바로 시작)', W/2, SHOP_Y - 8);
+  }
+}
+
+function drawButton(r, label, accent){
+  ctx.fillStyle = accent ? '#ffd24a' : 'rgba(70,100,160,0.5)';
+  ctx.beginPath();
+  ctx.roundRect(r.x, r.y, r.w, r.h, 8);
+  ctx.fill();
+  ctx.fillStyle = accent ? '#1a1206' : '#e8f0ff';
+  ctx.font = 'bold 15px "Noto Sans KR",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(label, r.x + r.w/2, r.y + r.h/2 + 5);
+}
+
+function drawShop(){
+  // 하단 패널
+  ctx.fillStyle = 'rgba(4,8,18,0.85)';
+  ctx.fillRect(0, SHOP_Y, W, H - SHOP_Y);
+  ctx.strokeStyle = 'rgba(90,130,200,0.3)';
+  ctx.beginPath(); ctx.moveTo(0, SHOP_Y); ctx.lineTo(W, SHOP_Y); ctx.stroke();
+  // 카드
+  for (let i = 0; i < 5; i++){
+    const r = cardRect(i);
+    const t = G.shop[i];
+    ctx.beginPath();
+    ctx.roundRect(r.x, r.y, r.w, r.h, 8);
+    ctx.fillStyle = t ? (G.hoverCard === i ? 'rgba(50,70,120,0.9)' : 'rgba(28,40,70,0.9)') : 'rgba(16,22,40,0.6)';
+    ctx.fill();
+    if (!t) continue;
+    const col = CLASSES[t.cls].color;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = G.hoverCard === i ? 2.5 : 1.2;
+    ctx.stroke();
+    // 비용
+    ctx.fillStyle = '#ffd24a';
+    ctx.font = 'bold 14px "Noto Sans KR",sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(t.cost + 'G', r.x + 8, r.y + 18);
+    // 클래스 태그
+    ctx.fillStyle = col;
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 11px "Noto Sans KR",sans-serif';
+    ctx.fillText(CLASSES[t.cls].name, r.x + r.w - 8, r.y + 17);
+    // 이름
+    ctx.fillStyle = '#f0f5ff';
+    ctx.font = 'bold 13px "Noto Sans KR",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(t.name, r.x + r.w/2, r.y + 42);
+    // 스탯
+    ctx.fillStyle = 'rgba(190,205,235,0.85)';
+    ctx.font = '11px "Noto Sans KR",sans-serif';
+    ctx.fillText('피해 ' + t.dmg + ' · 간격 ' + t.cd + 's', r.x + r.w/2, r.y + 62);
+    ctx.fillText('사거리 ' + t.rng, r.x + r.w/2, r.y + 78);
+    ctx.fillStyle = 'rgba(150,170,210,0.7)';
+    ctx.font = '10px "Noto Sans KR",sans-serif';
+    ctx.fillText(t.desc, r.x + r.w/2, r.y + 96);
+  }
+  drawButton(REROLL_BTN, '리롤 2G', false);
+  drawButton(START_BTN, '파도 시작 ▶', true);
+}
+
+function drawTitle(){
+  ctx.textAlign = 'center';
+  // 등대 글로우
+  const g = ctx.createRadialGradient(W/2, 260, 10, W/2, 260, 260);
+  g.addColorStop(0, 'rgba(255,214,140,0.35)');
+  g.addColorStop(1, 'rgba(255,214,140,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(W/2, 260, 260, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#ffd27a';
+  ctx.font = 'bold 56px "Noto Sans KR",sans-serif';
+  ctx.shadowColor = '#ffd27a'; ctx.shadowBlur = 30;
+  ctx.fillText('심연의 등불', W/2, 250);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(190,205,235,0.9)';
+  ctx.font = '17px "Noto Sans KR",sans-serif';
+  ctx.fillText('어둠의 바다 한가운데, 마지막 빛을 지켜라', W/2, 300);
+  ctx.font = '14px "Noto Sans KR",sans-serif';
+  ctx.fillStyle = 'rgba(140,160,200,0.8)';
+  ctx.fillText('영웅을 고용하고 진형을 짜면 전투는 자동으로 진행됩니다', W/2, 332);
+  drawButton(TITLE_BTN, '시작하기', true);
+  if (G.best > 0){
+    ctx.fillStyle = 'rgba(255,210,74,0.8)';
+    ctx.font = '13px "Noto Sans KR",sans-serif';
+    ctx.fillText('최고 기록: 파도 ' + G.best, W/2, 505);
+  }
+  ctx.fillStyle = 'rgba(120,140,180,0.5)';
+  ctx.font = '11px "Noto Sans KR",sans-serif';
+  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R1', W/2, H - 24);
+}
+
+function drawOver(){
+  ctx.fillStyle = 'rgba(2,3,10,0.78)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff8a6a';
+  ctx.font = 'bold 44px "Noto Sans KR",sans-serif';
+  ctx.fillText('코어가 꺼졌습니다', W/2, 240);
+  ctx.fillStyle = '#cfe0ff';
+  ctx.font = '18px "Noto Sans KR",sans-serif';
+  ctx.fillText('도달 파도: ' + G.wave + '   ·   처치: ' + G.stats.kills + '   ·   획득 골드: ' + G.stats.earned, W/2, 300);
+  ctx.fillStyle = '#ffd24a';
+  ctx.font = '15px "Noto Sans KR",sans-serif';
+  ctx.fillText('최고 기록: 파도 ' + G.best + (G.wave >= G.best ? '  (신기록!)' : ''), W/2, 336);
+  drawButton(OVER_BTN, '다시 점화', true);
+}
+
+// ---------- 메인 루프 ----------
+let lastT = performance.now();
+function loop(now){
+  let dt = Math.min((now - lastT) / 1000, 0.05);
+  lastT = now;
+  // FPS
+  G.fpsAcc += dt; G.fpsCnt++; G.fpsT += dt;
+  if (G.fpsT >= 0.5){ G.fps = G.fpsCnt / G.fpsAcc; G.fpsAcc = 0; G.fpsCnt = 0; G.fpsT = 0; }
+  // 히트스톱
+  if (G.hitstop > 0){ G.hitstop -= dt; draw(); requestAnimationFrame(loop); return; }
+  G.time += dt;
+  G.trauma = Math.max(0, G.trauma - dt * 1.6);
+  if (G.msgT > 0) G.msgT -= dt;
+  if (G.phase === 'combat') updateCombat(dt);
+  if (G.phase === 'shop' && G.autoTimer > 0){
+    G.autoTimer -= dt;
+    if (G.autoTimer <= 0) startWave();
+  }
+  // 파티클/숫자 갱신
+  for (let i = G.particles.length - 1; i >= 0; i--){
+    const p = G.particles[i];
+    p.life -= dt;
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= Math.pow(0.01, dt); p.vy *= Math.pow(0.01, dt);
+    if (p.life <= 0) G.particles.splice(i, 1);
+  }
+  for (let i = G.dmgNums.length - 1; i >= 0; i--){
+    const d = G.dmgNums[i];
+    d.life -= dt; d.y -= 30 * dt;
+    if (d.life <= 0) G.dmgNums.splice(i, 1);
+  }
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---------- 자동 부팅 테스트 (?autotest=1) ----------
+if (location.search.indexOf('autotest') >= 0){
+  window.__G = G;
+  setTimeout(() => {
+    newRun();
+    // 가장 싼 카드부터 최대 3장 구매·배치
+    let placed = 0;
+    for (let guard = 0; guard < 12 && placed < 3; guard++){
+      let bi = -1, bc = 99;
+      for (let i = 0; i < 5; i++){ const t = G.shop[i]; if (t && t.cost < bc && t.cost <= G.gold){ bc = t.cost; bi = i; } }
+      if (bi < 0) break;
+      buyCard(bi);
+      if (G.placing){
+        const empty = G.slots.findIndex(x => !x.unit);
+        if (empty >= 0){ placeUnit(empty); placed++; }
+      }
+    }
+    startWave();
+  }, 300);
+}
+</script>
+</body>
+</html>
