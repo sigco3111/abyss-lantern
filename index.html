@@ -12,6 +12,7 @@
     font-family:"Noto Sans KR","Pretendard","Apple SD Gothic Neo","Malgun Gothic",sans-serif;}
   #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
   canvas{background:#05070f;cursor:crosshair;touch-action:none;}
+  #dash{position:fixed;display:none;z-index:5;cursor:default;background:transparent;}
   #rotateHint{display:none;position:fixed;inset:0;z-index:10;background:rgba(2,3,10,0.94);
     flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;
     color:#e8f0ff;font-size:17px;padding:0 32px;}
@@ -21,7 +22,7 @@
 </style>
 </head>
 <body>
-<div id="wrap"><canvas id="game" width="1024" height="640"></canvas></div>
+<div id="wrap"><canvas id="game" width="1024" height="640"></canvas><canvas id="dash" width="1024" height="640"></canvas></div>
 <div id="rotateHint"><div class="ic">📱⟳</div><div>기기를 가로로 돌리면<br>더 크게 플레이할 수 있습니다</div><button id="rotateHintSkip">세로로 계속하기</button></div>
 <script>
 "use strict";
@@ -37,6 +38,8 @@ const COARSE = location.search.indexOf('touch=1') >= 0 ||
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
+const dashCanvas = document.getElementById('dash');
+const dctx = dashCanvas.getContext('2d');
 let viewScale = 1, viewOX = 0, viewOY = 0;
 function resize(){
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -49,6 +52,15 @@ function resize(){
   viewScale = s * dpr;
   const rect = canvas.getBoundingClientRect();
   viewOX = rect.left; viewOY = rect.top;
+  const dash = document.getElementById('dash');
+  if (dash && dash.style){
+    dash.style.width = canvas.style.width;
+    dash.style.height = canvas.style.height;
+    dash.width = canvas.width;
+    dash.height = canvas.height;
+    dash.style.left = viewOX + 'px';
+    dash.style.top = viewOY + 'px';
+  }
 }
 let rhDismissed = false;
 function updateRotateHint(){
@@ -181,7 +193,9 @@ function unitMaxHp(u){
   return Math.round(hp * (1 + 0.5 * ((u.star || 1) - 1)));
 }
 function coreDamage(dmg){
-  G.coreHp -= dmg * (1 - guardianReduce());
+  const actual = dmg * (1 - guardianReduce());
+  G.coreHp -= actual;
+  G.waveCoreDmg += actual;
   G.coreFlash = 0.25;
   G.trauma = Math.min(G.trauma + 0.25, 1);
   burst(G.leader.x + rand(-14, 14), G.leader.y + rand(-14, 14), '#ff5a5a', 8, 2);
@@ -248,6 +262,10 @@ const G = {
   saveT: 0,
   fps: 0,
   stats: { kills: 0, earned: 0 },
+  dash: { open: false, tab: 0 },   // 기록판 (R9)
+  dmgByCls: {}, dmgAcc: 0, dpsHist: [], coreHist: [],
+  waveLog: [], waveKills: 0, waveCoreDmg: 0, waveUnitLoss: 0, waveGold: 0,
+  dashT: 0, dashDrawT: 0,
   mouse: { x: 0, y: 0, down: false },
   keys: {},
   eproj: [],           // 적 투사체
@@ -509,6 +527,9 @@ function endWave(){
   const bonus = 3 + interest;
   G.gold += bonus;
   G.stats.earned += bonus;
+  G.waveLog.push({ wave: G.wave, kills: G.waveKills, coreDmg: Math.round(G.waveCoreDmg), unitLoss: G.waveUnitLoss, gold: G.waveGold + bonus });
+  G.waveKills = 0; G.waveCoreDmg = 0; G.waveUnitLoss = 0; G.waveGold = 0;
+  if (G.waveLog.length > 60) G.waveLog.shift();
   G.phase = 'shop';
   G.aiming = -1;
   G.autoTimer = G.autoNext ? 10 : 0;
@@ -519,6 +540,10 @@ function endWave(){
 function gameOver(){
   G.phase = 'over';
   G.aiming = -1;
+  if (G.waveActive){
+    G.waveLog.push({ wave: G.wave, kills: G.waveKills, coreDmg: Math.round(G.waveCoreDmg), unitLoss: G.waveUnitLoss, gold: G.waveGold, partial: true });
+    G.waveKills = 0; G.waveCoreDmg = 0; G.waveUnitLoss = 0; G.waveGold = 0;
+  }
   const gain = Math.round((G.wave * 10 + Math.floor(G.stats.kills / 2)) * (1 + 0.15 * up('eternal')));
   G.lastGain = gain;
   G.meta.glimmer += gain;
@@ -636,6 +661,7 @@ function updateUnits(dt){
       G.deathRings.push({ x: u.x, y: u.y, r: 8, r1: 60, life: 0.4, maxlife: 0.4, color: CLASSES[u.cls].color });
       addDmgNum(u.x, u.y - 26, u.name + ' 격파', '#ff9a9a', 1.0);
       G.trauma = Math.min(G.trauma + 0.15, 0.6);
+      G.waveUnitLoss++;
       G.units.splice(i, 1);
       i--;
       continue;
@@ -837,7 +863,7 @@ function updateCombat(dt){
       let hitAny = false;
       for (const e of G.enemies){
         if (dist(u.x, u.y, e.x, e.y) <= u.rng + e.r){
-          hurtEnemy(e, unitDmg(u), u.x, u.y);
+          hurtEnemy(e, unitDmg(u), u.x, u.y, u.cls);
           hitAny = true;
         }
       }
@@ -851,7 +877,7 @@ function updateCombat(dt){
       const spd = 430;
       G.projectiles.push({
         x: u.x, y: u.y, vx: Math.cos(a) * spd, vy: Math.sin(a) * spd,
-        tgt, dmg: unitDmg(u), aoe: unitAoe(u),
+        tgt, dmg: unitDmg(u), aoe: unitAoe(u), cls: u.cls,
         color: CLASSES[u.cls].light,
         mage: (u.aoe || 0) > 0, life: 2.2,
       });
@@ -905,11 +931,11 @@ function updateCombat(dt){
           burst(p.x, p.y, '#ff9a5a', 18, 2.2);
           ringFx(p.x, p.y, p.aoe, '#ff9a5a');
           for (const e of G.enemies){
-            if (dist(p.x, p.y, e.x, e.y) <= p.aoe + e.r) hurtEnemy(e, p.dmg, p.x, p.y);
+            if (dist(p.x, p.y, e.x, e.y) <= p.aoe + e.r) hurtEnemy(e, p.dmg, p.x, p.y, p.cls);
           }
           G.trauma = Math.min(G.trauma + 0.12, 0.6);
         } else {
-          hurtEnemy(hit, p.dmg, p.x, p.y);
+          hurtEnemy(hit, p.dmg, p.x, p.y, p.cls);
         }
       }
       G.projectiles.splice(i, 1);
@@ -1003,7 +1029,7 @@ function updateCombat(dt){
     if (d < 24){
       let v = o.value;
       if (Math.random() < sailorLuck()){ v += 1; addDmgNum(o.x, o.y - 10, '+1', '#48cae4', 0.9); }
-      G.gold += v;
+      G.gold += v; G.waveGold += v;
       G.stats.earned += v;
       burst(o.x, o.y, '#ffd24a', 6, 1.5);
       G.orbs.splice(i, 1);
@@ -1012,7 +1038,7 @@ function updateCombat(dt){
     if (o.life <= 0) G.orbs.splice(i, 1);
   }
 }
-function hurtEnemy(e, dmg, sx, sy){
+function hurtEnemy(e, dmg, sx, sy, cls){
   if (e.kind === 'shield' && sx !== undefined){
     // 정면 100도 부채괄 피해 70% 감소
     const hitA = Math.atan2(e.y - sy, e.x - sx);
@@ -1023,6 +1049,8 @@ function hurtEnemy(e, dmg, sx, sy){
       addDmgNum(e.x, e.y - e.r - 14, '방어', '#9ab8d8', 0.8);
     }
   }
+  G.dmgByCls[cls || 'skill'] = (G.dmgByCls[cls || 'skill'] || 0) + dmg;
+  G.dmgAcc += dmg;
   e.hp -= dmg;
   e.flash = e.boss ? 0.13 : 0.16; // 피격 흰색 플래시 강화
   e.sx = e.boss ? 0.85 : 0.68; e.sxV = 2.5; // 피격 스쿼시
@@ -1036,6 +1064,7 @@ function killEnemy(i){
   const e = G.enemies[i];
   G.enemies.splice(i, 1);
   G.stats.kills++;
+  G.waveKills++;
   const big = e.kind === 'tank' || e.boss;
   burst(e.x, e.y, e.color, e.boss ? 70 : big ? 26 : 12, e.boss ? 4 : big ? 3 : 2);
   // 사망 확장 링 + 파편
@@ -1053,7 +1082,7 @@ function killEnemy(i){
     G.abAmt = 1;
     G.trauma = 1;
     G.hitstop = Math.max(G.hitstop, 0.12);
-    G.gold += 10; G.stats.earned += 10;
+    G.gold += 10; G.stats.earned += 10; G.waveGold += 10;
     addDmgNum(e.x, e.y - 50, '+10G 처치 보너스', '#ffd24a', 1.6);
     flashMsg('심연 군주를 물리쳤습니다!');
   } else if (big){ G.trauma = Math.min(G.trauma + 0.3, 1); G.hitstop = Math.max(G.hitstop, 0.05); }
@@ -1189,7 +1218,7 @@ function castSkill(i, tx, ty){
     ringFx(tx, ty, R * 0.55, '#ffe9a8');
     for (const e of G.enemies){
       if (dist(tx, ty, e.x, e.y) <= R + e.r){
-        hurtEnemy(e, dmg, tx, ty);
+        hurtEnemy(e, dmg, tx, ty, 'skill');
         e.kbx *= 3; e.kby *= 3; // 폭발 넉백 강화
       }
     }
@@ -1204,7 +1233,7 @@ function castSkill(i, tx, ty){
       const dx = x2 - L.x, dy = y2 - L.y, len2 = dx * dx + dy * dy;
       let tt = ((e.x - L.x) * dx + (e.y - L.y) * dy) / len2;
       tt = clamp(tt, 0, 1);
-      if (dist(L.x + dx * tt, L.y + dy * tt, e.x, e.y) < e.r + HALF_W) hurtEnemy(e, dmg, L.x, L.y);
+      if (dist(L.x + dx * tt, L.y + dy * tt, e.x, e.y) < e.r + HALF_W) hurtEnemy(e, dmg, L.x, L.y, 'skill');
     }
     for (let k = 0; k < 26; k++){
       const d = rand(40, LEN * 0.9);
@@ -1268,6 +1297,11 @@ function rosterRects(){
   return G.units.map((u, i) => ({ x: 10, y: 56 + i * 26, w: 158, h: 23, i }));
 }
 const GEAR_BTN = COARSE ? { x: W - 54, y: 42, w: 42, h: 32 } : { x: W - 46, y: 44, w: 34, h: 26 };
+const DASH_BTN = COARSE ? { x: W - 104, y: 42, w: 42, h: 32 } : { x: W - 88, y: 44, w: 34, h: 26 };
+const DASH_OVER_BTN = { x: W/2 + 102, y: 474, w: 108, h: 52 };
+const DASH_CLOSE = { x: W - 60, y: 18, w: 40, h: 32 };
+const DASH_TAB0 = { x: 40, y: 18, w: 84, h: 32 };
+const DASH_TAB1 = { x: 132, y: 18, w: 84, h: 32 };
 const SET_PANEL = { x: W/2 - 170, y: 120, w: 340, h: 210 };
 const SET_SHAKE_BTNS = [0, 1, 2].map(v => ({ x: W/2 - 150 + v * 100, y: 186, w: 92, h: 30, v }));
 const SET_QUAL_BTNS = [1, 0].map((v, i) => ({ x: W/2 - 150 + i * 100, y: 244, w: 92, h: 30, v }));
@@ -1314,6 +1348,7 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
   if (G.phase !== 'title' && inRect(p, GEAR_BTN)){ G.settingsOpen = true; return; }
+  if (G.phase !== 'title' && inRect(p, DASH_BTN)){ setDash(!G.dash.open); return; }
   if (G.phase === 'title'){
     if (G.savedRun){
       if (inRect(p, TITLE_BTN)){ restoreRun(G.savedRun); return; }
@@ -1328,6 +1363,7 @@ canvas.addEventListener('pointerdown', e => {
       if (inRect(p, rbRect(i))){ buyUpgrade(i); return; }
     }
     if (inRect(p, OVER_BTN)){ newRun(); return; }
+    if (inRect(p, DASH_OVER_BTN)){ setDash(true, 1); return; }
     if (inRect(p, RESET_BTN)){
       if (G.resetConfirmT > 0){
         // pagehide의 재저장을 막기 위해 메모리 상태부터 초기화
@@ -1405,6 +1441,14 @@ canvas.addEventListener('pointerdown', e => {
   }
 });
 canvas.addEventListener('pointerup', () => { G.mouse.down = false; });
+dashCanvas.addEventListener('pointerdown', e => {
+  const rect = dashCanvas.getBoundingClientRect();
+  const sc = rect.width / W;
+  const p = { x: (e.clientX - rect.left) / sc, y: (e.clientY - rect.top) / sc };
+  if (inRect(p, DASH_CLOSE)){ setDash(false); return; }
+  if (inRect(p, DASH_TAB0)){ G.dash.tab = 0; G.dashDrawT = 0; return; }
+  if (inRect(p, DASH_TAB1)){ G.dash.tab = 1; G.dashDrawT = 0; return; }
+});
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
@@ -1415,6 +1459,7 @@ window.addEventListener('keydown', e => {
   }
   if (G.phase === 'combat' && ['1', '2', '3'].includes(k)) tryAim(parseInt(k, 10) - 1);
   if (k === 'escape') G.aiming = -1;
+  if (k === 't' && G.phase !== 'title') setDash(!G.dash.open);
   if (e.key === ' '){
     e.preventDefault();
     if (G.phase === 'shop') startWave();
@@ -1436,6 +1481,8 @@ function newRun(){
   G.enemies = []; G.projectiles = []; G.particles = []; G.dmgNums = []; G.orbs = [];
   G.spawnQueue = []; G.waveActive = false;
   G.stats = { kills: 0, earned: 0 };
+  G.dmgByCls = {}; G.dmgAcc = 0; G.dpsHist = []; G.coreHist = [];
+  G.waveLog = []; G.waveKills = 0; G.waveCoreDmg = 0; G.waveUnitLoss = 0; G.waveGold = 0;
   G.trauma = 0; G.hitstop = 0;
   G.control = 'delegate'; G.behavior = 'attack';
   for (const sk of G.skills) sk.t = 0;
@@ -2209,6 +2256,18 @@ function drawHUD(){
   ctx.font = '15px "Noto Sans KR",sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText('⚙', GEAR_BTN.x + GEAR_BTN.w/2, GEAR_BTN.y + 18);
+  // 기록판 토글 버튼 (막대 그래프 아이콘)
+  ctx.beginPath();
+  ctx.roundRect(DASH_BTN.x, DASH_BTN.y, DASH_BTN.w, DASH_BTN.h, 6);
+  ctx.fillStyle = G.dash.open ? 'rgba(255,210,74,0.3)' : 'rgba(40,56,96,0.55)';
+  ctx.fill();
+  ctx.fillStyle = G.dash.open ? '#ffd24a' : 'rgba(190,205,235,0.85)';
+  {
+    const bx = DASH_BTN.x + DASH_BTN.w/2 - 7, by = DASH_BTN.y + DASH_BTN.h - 7;
+    ctx.fillRect(bx, by - 7, 4, 7);
+    ctx.fillRect(bx + 5.5, by - 12, 4, 12);
+    ctx.fillRect(bx + 11, by - 4.5, 4, 4.5);
+  }
   // 위임 모드 버튼
   for (const b of BEHAVE_BTNS){
     const active = G.behavior === b.id && G.control === 'delegate';
@@ -2438,7 +2497,371 @@ function drawTitle(){
   }
   ctx.fillStyle = 'rgba(120,140,180,0.5)';
   ctx.font = '11px "Noto Sans KR",sans-serif';
-  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R8', W/2, H - 24);
+  ctx.fillText('SNKRX 오마주 · 클래스 시너지 오토 배틀 · R9', W/2, H - 24);
+}
+
+// ---------- 심연 기록판 (R9 대시보드) ----------
+function drawDash(){
+  if (!G.dash.open) return;
+  dctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
+  dctx.clearRect(0, 0, W, H);
+  const F = '"Noto Sans KR",sans-serif';
+  // 배경 + 프레임
+  dctx.fillStyle = 'rgba(3,6,16,0.93)';
+  dctx.fillRect(0, 0, W, H);
+  const bg = dctx.createRadialGradient(W/2, H/2, 60, W/2, H/2, 640);
+  bg.addColorStop(0, 'rgba(40,56,100,0.22)');
+  bg.addColorStop(1, 'rgba(0,0,0,0)');
+  dctx.fillStyle = bg;
+  dctx.fillRect(0, 0, W, H);
+  dctx.strokeStyle = 'rgba(255,210,120,0.4)';
+  dctx.lineWidth = 1.5;
+  dctx.beginPath(); dctx.roundRect(18, 12, W - 36, H - 24, 14); dctx.stroke();
+  dctx.lineWidth = 1;
+  const panel = (x, y, w, h, title) => {
+    dctx.fillStyle = 'rgba(10,16,34,0.88)';
+    dctx.beginPath(); dctx.roundRect(x, y, w, h, 10); dctx.fill();
+    dctx.strokeStyle = 'rgba(90,120,180,0.35)';
+    dctx.stroke();
+    dctx.fillStyle = 'rgba(165,185,225,0.85)';
+    dctx.font = 'bold 12px ' + F;
+    dctx.textAlign = 'left';
+    dctx.fillText(title, x + 12, y + 20);
+  };
+  const empty = (x, y, w, h, msg) => {
+    dctx.fillStyle = 'rgba(140,160,200,0.55)';
+    dctx.font = '11px ' + F;
+    dctx.textAlign = 'center';
+    dctx.fillText(msg, x + w/2, y + h/2 + 4);
+  };
+  const lineGraph = (x, y, w, h, data, color, maxV) => {
+    // 격자
+    dctx.strokeStyle = 'rgba(90,120,180,0.18)';
+    for (let i = 1; i <= 3; i++){
+      dctx.beginPath(); dctx.moveTo(x, y + h * i / 4); dctx.lineTo(x + w, y + h * i / 4); dctx.stroke();
+    }
+    if (data.length < 2){ empty(x, y, w, h, '기록 수집 중…'); return; }
+    const mx = maxV || Math.max(1, ...data);
+    dctx.beginPath();
+    for (let i = 0; i < data.length; i++){
+      const px = x + w * i / (119), py = y + h - (data[i] / mx) * (h - 4) - 2;
+      i === 0 ? dctx.moveTo(px, py) : dctx.lineTo(px, py);
+    }
+    dctx.strokeStyle = color;
+    dctx.lineWidth = 2;
+    dctx.stroke();
+    dctx.lineWidth = 1;
+    dctx.lineTo(x + w * (data.length - 1) / 119, y + h);
+    dctx.lineTo(x, y + h);
+    dctx.closePath();
+    dctx.globalAlpha = 0.16;
+    dctx.fillStyle = color;
+    dctx.fill();
+    dctx.globalAlpha = 1;
+  };
+  // 헤더: 탭 + 제목 + 닫기
+  for (const [btn, label, idx] of [[DASH_TAB0, '실시간', 0], [DASH_TAB1, '정산', 1]]){
+    const on = G.dash.tab === idx;
+    dctx.beginPath(); dctx.roundRect(btn.x, btn.y, btn.w, btn.h, 8); 
+    dctx.fillStyle = on ? 'rgba(255,210,120,0.22)' : 'rgba(30,42,74,0.7)';
+    dctx.fill();
+    dctx.strokeStyle = on ? '#ffd88a' : 'rgba(90,120,180,0.4)';
+    dctx.stroke();
+    dctx.fillStyle = on ? '#ffd88a' : 'rgba(160,180,220,0.75)';
+    dctx.font = 'bold 13px ' + F;
+    dctx.textAlign = 'center';
+    dctx.fillText(label, btn.x + btn.w/2, btn.y + 21);
+  }
+  dctx.fillStyle = '#ffd88a';
+  dctx.font = 'bold 20px ' + F;
+  dctx.textAlign = 'left';
+  dctx.fillText('심연 기록판', 240, 41);
+  dctx.fillStyle = 'rgba(140,160,200,0.6)';
+  dctx.font = '11px ' + F;
+  dctx.fillText('파도 ' + Math.max(1, G.wave) + ' · 처치 ' + G.stats.kills, 380, 41);
+  dctx.beginPath(); dctx.roundRect(DASH_CLOSE.x, DASH_CLOSE.y, DASH_CLOSE.w, DASH_CLOSE.h, 8);
+  dctx.fillStyle = 'rgba(90,40,50,0.6)';
+  dctx.fill();
+  dctx.fillStyle = '#ffb0b0';
+  dctx.font = 'bold 15px ' + F;
+  dctx.textAlign = 'center';
+  dctx.fillText('✕', DASH_CLOSE.x + 20, DASH_CLOSE.y + 22);
+
+  const dmgEntries = Object.entries(G.dmgByCls).filter(([, v]) => v > 0.5).sort((a, b) => b[1] - a[1]);
+  const dmgTotal = dmgEntries.reduce((t, [, v]) => t + v, 0);
+  const clsName = k => k === 'skill' ? '스킬' : (CLASSES[k] ? CLASSES[k].name : k);
+  const clsColor = k => k === 'skill' ? '#c9d6ff' : (CLASSES[k] ? CLASSES[k].color : '#888');
+
+  if (G.dash.tab === 0){
+    // ---- 실시간 ----
+    // DPS 패널
+    panel(40, 64, 360, 252, '초당 피해 (최근 60초)');
+    const curDps = G.dpsHist.length ? G.dpsHist[G.dpsHist.length - 1] : 0;
+    dctx.fillStyle = '#ffd24a';
+    dctx.font = 'bold 34px ' + F;
+    dctx.textAlign = 'left';
+    dctx.fillText(Math.round(curDps).toLocaleString(), 56, 122);
+    dctx.fillStyle = 'rgba(160,180,220,0.7)';
+    dctx.font = '11px ' + F;
+    dctx.fillText('DPS', 58 + dctx.measureText(Math.round(curDps).toLocaleString()).width + 8, 122);
+    lineGraph(56, 140, 328, 156, G.dpsHist, '#ffd24a');
+    // 등불 내구 패널
+    panel(40, 332, 360, 264, '등불 내구 추이 (최근 60초)');
+    dctx.fillStyle = G.coreHp / G.coreMax > 0.35 ? '#6ae28f' : '#ff7a6a';
+    dctx.font = 'bold 26px ' + F;
+    dctx.fillText(Math.ceil(G.coreHp) + ' / ' + G.coreMax, 56, 386);
+    lineGraph(56, 404, 328, 172, G.coreHist, '#6ae28f', G.coreMax);
+    // 클래스별 피해량 도넛
+    panel(424, 64, 280, 532, '클래스별 피해량 (이번 런)');
+    if (dmgTotal <= 0){ empty(424, 64, 280, 532, '아직 가한 피해가 없습니다'); }
+    else {
+      const cx = 564, cy = 224, R = 88, r2 = 54;
+      let a0 = -Math.PI / 2;
+      const shown = dmgEntries.slice(0, 6);
+      const restV = dmgEntries.slice(6).reduce((t, [, v]) => t + v, 0);
+      if (restV > 0) shown.push(['기타', restV]);
+      for (const [k, v] of shown){
+        const a1 = a0 + TAU * (v / dmgTotal);
+        dctx.beginPath();
+        dctx.arc(cx, cy, R, a0 + 0.02, a1 - 0.02);
+        dctx.arc(cx, cy, r2, a1 - 0.02, a0 + 0.02, true);
+        dctx.closePath();
+        dctx.fillStyle = k === '기타' ? 'rgba(120,135,165,0.7)' : clsColor(k);
+        dctx.fill();
+        a0 = a1;
+      }
+      dctx.fillStyle = '#f0f5ff';
+      dctx.font = 'bold 15px ' + F;
+      dctx.textAlign = 'center';
+      dctx.fillText(Math.round(dmgTotal).toLocaleString(), cx, cy - 2);
+      dctx.fillStyle = 'rgba(160,180,220,0.7)';
+      dctx.font = '10px ' + F;
+      dctx.fillText('총 피해', cx, cy + 14);
+      let ly = 348;
+      dctx.textAlign = 'left';
+      for (const [k, v] of shown){
+        dctx.fillStyle = k === '기타' ? 'rgba(120,135,165,0.9)' : clsColor(k);
+        dctx.beginPath(); dctx.roundRect(446, ly - 9, 10, 10, 2); dctx.fill();
+        dctx.fillStyle = 'rgba(230,238,255,0.9)';
+        dctx.font = '11px ' + F;
+        dctx.fillText(clsName(k), 462, ly);
+        dctx.textAlign = 'right';
+        dctx.fillStyle = 'rgba(160,180,220,0.85)';
+        dctx.fillText((v / dmgTotal * 100).toFixed(1) + '%', 566, ly);
+        dctx.fillStyle = 'rgba(120,140,180,0.75)';
+        dctx.font = '10px ' + F;
+        dctx.fillText(Math.round(v).toLocaleString(), 686, ly);
+        dctx.textAlign = 'left';
+        ly += 24;
+      }
+    }
+    // 시너지 노드 그래프
+    panel(728, 64, 256, 532, '시너지 노드');
+    const cc = classCounts();
+    const keys = Object.keys(CLASSES);
+    const nx = 856, ny = 320, R2 = 128;
+    // 중심 등불 노드
+    // 엣지 먼저
+    keys.forEach((k, i) => {
+      const a = -Math.PI / 2 + i / keys.length * TAU;
+      const x2 = nx + Math.cos(a) * R2, y2 = ny + Math.sin(a) * R2;
+      const cnt = cc[k] || 0;
+      if (cnt <= 0) return;
+      const lv = synergyLevel(k);
+      dctx.beginPath();
+      dctx.moveTo(nx, ny); dctx.lineTo(x2, y2);
+      dctx.strokeStyle = CLASSES[k].color;
+      dctx.globalAlpha = 0.2 + lv * 0.3;
+      dctx.lineWidth = 1 + lv * 2;
+      dctx.stroke();
+      dctx.globalAlpha = 1; dctx.lineWidth = 1;
+    });
+    keys.forEach((k, i) => {
+      const a = -Math.PI / 2 + i / keys.length * TAU;
+      const x2 = nx + Math.cos(a) * R2, y2 = ny + Math.sin(a) * R2;
+      const cnt = cc[k] || 0;
+      const lv = synergyLevel(k);
+      dctx.beginPath(); dctx.arc(x2, y2, 17, 0, TAU);
+      dctx.fillStyle = 'rgba(8,12,26,0.95)';
+      dctx.fill();
+      if (lv > 0){ dctx.shadowColor = CLASSES[k].color; dctx.shadowBlur = 8 + lv * 6; }
+      dctx.strokeStyle = cnt > 0 ? CLASSES[k].color : 'rgba(90,110,150,0.45)';
+      dctx.lineWidth = 1.2 + lv * 1.4;
+      dctx.stroke();
+      dctx.shadowBlur = 0; dctx.lineWidth = 1;
+      dctx.fillStyle = cnt > 0 ? CLASSES[k].light : 'rgba(120,140,175,0.6)';
+      dctx.font = 'bold 12px ' + F;
+      dctx.textAlign = 'center';
+      dctx.fillText(cnt > 0 ? String(cnt) : '·', x2, y2 + 4);
+      // 이름 + 다음 단계 진행
+      dctx.fillStyle = cnt > 0 ? 'rgba(220,230,250,0.9)' : 'rgba(120,140,175,0.55)';
+      dctx.font = '10px ' + F;
+      const label = CLASSES[k].name + (lv >= 2 ? ' MAX' : cnt > 0 ? ' ' + cnt + '/' + (cnt >= SYNERGY[k].tiers[0] ? SYNERGY[k].tiers[1] : SYNERGY[k].tiers[0]) : '');
+      dctx.fillText(label, x2, y2 + 32);
+    });
+    // 중심 등불
+    const lg = dctx.createRadialGradient(nx, ny, 4, nx, ny, 34);
+    lg.addColorStop(0, 'rgba(255,220,140,0.9)');
+    lg.addColorStop(1, 'rgba(255,180,74,0)');
+    dctx.fillStyle = lg;
+    dctx.fillRect(nx - 34, ny - 34, 68, 68);
+    dctx.beginPath(); dctx.arc(nx, ny, 21, 0, TAU);
+    dctx.fillStyle = 'rgba(20,26,48,0.95)';
+    dctx.fill();
+    dctx.strokeStyle = '#ffd24a';
+    dctx.lineWidth = 2;
+    dctx.stroke();
+    dctx.lineWidth = 1;
+    dctx.fillStyle = '#ffd88a';
+    dctx.font = 'bold 11px ' + F;
+    dctx.textAlign = 'center';
+    dctx.fillText('등불', nx, ny + 4);
+    dctx.fillStyle = 'rgba(140,160,200,0.6)';
+    dctx.font = '10px ' + F;
+    dctx.fillText('클래스 2/4기 달성 시', nx, 574);
+    dctx.fillText('연결선이 밝아집니다', nx, 588);
+  } else {
+    // ---- 정산 타임라인 ----
+    const log = G.waveLog;
+    // 요약 칩
+    const unitLossTotal = log.reduce((t, w2) => t + w2.unitLoss, 0);
+    const chips = [
+      ['도달 파도', Math.max(1, G.wave)], ['총 처치', G.stats.kills],
+      ['획득 골드', G.stats.earned], ['유닛 손실', unitLossTotal],
+    ];
+    let chx = 40;
+    dctx.font = 'bold 12px ' + F;
+    for (const [label, val] of chips){
+      const wch = dctx.measureText(label + ' ' + val).width + 34;
+      dctx.beginPath(); dctx.roundRect(chx, 62, wch, 34, 8);
+      dctx.fillStyle = 'rgba(20,30,58,0.85)';
+      dctx.fill();
+      dctx.strokeStyle = 'rgba(255,210,120,0.3)';
+      dctx.stroke();
+      dctx.textAlign = 'left';
+      dctx.fillStyle = 'rgba(160,180,220,0.8)';
+      dctx.fillText(label, chx + 12, 83);
+      dctx.fillStyle = '#ffd88a';
+      dctx.fillText(String(val), chx + 12 + dctx.measureText(label + ' ').width, 83);
+      chx += wch + 12;
+    }
+    // 타임라인 패널
+    panel(40, 112, 944, 344, '파도별 정산 타임라인');
+    if (!log.length){ empty(40, 112, 944, 344, '아직 완료한 파도가 없습니다'); }
+    else {
+      const gx = 76, gy = 152, gw = 872, gh = 240;
+      const n = log.length;
+      const slot = gw / n;
+      const bw = Math.min(26, slot * 0.62);
+      const maxK = Math.max(4, ...log.map(w2 => w2.kills));
+      const maxR = Math.max(10, ...log.map(w2 => Math.max(w2.coreDmg, w2.gold)));
+      // 격자 + 축
+      dctx.strokeStyle = 'rgba(90,120,180,0.18)';
+      dctx.textAlign = 'right';
+      dctx.font = '9px ' + F;
+      for (let i = 0; i <= 4; i++){
+        const yy = gy + gh * i / 4;
+        dctx.beginPath(); dctx.moveTo(gx, yy); dctx.lineTo(gx + gw, yy); dctx.stroke();
+        dctx.fillStyle = 'rgba(120,140,180,0.6)';
+        dctx.fillText(Math.round(maxK * (1 - i / 4)), gx - 6, yy + 3);
+        dctx.textAlign = 'left';
+        dctx.fillText(Math.round(maxR * (1 - i / 4)), gx + gw + 6, yy + 3);
+        dctx.textAlign = 'right';
+      }
+      // 막대: 처치
+      log.forEach((w2, i) => {
+        const bx = gx + slot * i + (slot - bw) / 2;
+        const bh = (w2.kills / maxK) * gh;
+        dctx.fillStyle = w2.partial ? 'rgba(127,212,138,0.4)' : 'rgba(127,212,138,0.85)';
+        dctx.fillRect(bx, gy + gh - bh, bw, bh);
+        if (w2.unitLoss > 0){ // 유닛 손실 마커
+          dctx.fillStyle = 'rgba(255,110,120,0.9)';
+          dctx.beginPath(); dctx.arc(bx + bw/2, gy + gh - bh - 7, 2.5, 0, TAU); dctx.fill();
+        }
+        // 파도 번호
+        if (n <= 20 || i % 2 === 0){
+          dctx.fillStyle = 'rgba(120,140,180,0.7)';
+          dctx.font = '9px ' + F;
+          dctx.textAlign = 'center';
+          dctx.fillText(String(w2.wave), bx + bw/2, gy + gh + 14);
+        }
+      });
+      // 선: 등불 피해 / 골드
+      const plotLine = (vals, color) => {
+        dctx.beginPath();
+        vals.forEach((v, i) => {
+          const px = gx + slot * i + slot / 2, py = gy + gh - (v / maxR) * gh;
+          i === 0 ? dctx.moveTo(px, py) : dctx.lineTo(px, py);
+        });
+        dctx.strokeStyle = color;
+        dctx.lineWidth = 2;
+        dctx.stroke();
+        dctx.lineWidth = 1;
+      };
+      plotLine(log.map(w2 => w2.coreDmg), '#ff6a7a');
+      plotLine(log.map(w2 => w2.gold), '#ffd24a');
+      // 범례
+      const legend = [['처치', 'rgba(127,212,138,0.9)'], ['등불 피해', '#ff6a7a'], ['골드', '#ffd24a'], ['유닛 손실', 'rgba(255,110,120,0.9)']];
+      let lx = gx + gw - 300;
+      dctx.font = '10px ' + F;
+      for (const [label, color] of legend){
+        dctx.fillStyle = color;
+        dctx.beginPath(); dctx.roundRect(lx, 132, 10, 10, 2); dctx.fill();
+        dctx.fillStyle = 'rgba(200,214,240,0.85)';
+        dctx.textAlign = 'left';
+        dctx.fillText(label, lx + 14, 141);
+        lx += 14 + dctx.measureText(label).width + 16;
+      }
+      dctx.fillStyle = 'rgba(120,140,180,0.6)';
+      dctx.font = '9px ' + F;
+      dctx.textAlign = 'center';
+      dctx.fillText('(불완전 파도는 옅게 표시)', gx + gw/2, gy + gh + 30);
+    }
+    // 클래스별 피해량 가로 막대
+    panel(40, 472, 944, 124, '클래스별 피해량 (이번 런)');
+    if (dmgTotal <= 0){ empty(40, 472, 944, 124, '아직 가한 피해가 없습니다'); }
+    else {
+      const bx = 56, bw2 = 760, by = 512, bh2 = 26;
+      let off = 0;
+      for (const [k, v] of dmgEntries){
+        const wseg = bw2 * (v / dmgTotal);
+        dctx.fillStyle = clsColor(k);
+        dctx.fillRect(bx + off, by, Math.max(1, wseg - 1), bh2);
+        off += wseg;
+      }
+      dctx.strokeStyle = 'rgba(90,120,180,0.4)';
+      dctx.strokeRect(bx, by, bw2, bh2);
+      let lx2 = bx, ly2 = 562;
+      dctx.font = '10px ' + F;
+      dctx.textAlign = 'left';
+      for (const [k, v] of dmgEntries.slice(0, 8)){
+        const label = clsName(k) + ' ' + (v / dmgTotal * 100).toFixed(0) + '%';
+        if (lx2 + dctx.measureText(label).width > bx + bw2 + 120){ lx2 = bx; ly2 += 16; }
+        dctx.fillStyle = clsColor(k);
+        dctx.beginPath(); dctx.roundRect(lx2, ly2 - 9, 9, 9, 2); dctx.fill();
+        dctx.fillStyle = 'rgba(210,220,245,0.9)';
+        dctx.fillText(label, lx2 + 13, ly2);
+        lx2 += 13 + dctx.measureText(label).width + 18;
+      }
+      dctx.fillStyle = '#f0f5ff';
+      dctx.font = 'bold 12px ' + F;
+      dctx.textAlign = 'right';
+      dctx.fillText('총 ' + Math.round(dmgTotal).toLocaleString(), 968, 530);
+    }
+  }
+  // 하단 힌트
+  dctx.fillStyle = 'rgba(120,140,180,0.55)';
+  dctx.font = '10px ' + F;
+  dctx.textAlign = 'center';
+  dctx.fillText('T 키 또는 상단 버튼으로 닫기 · 게임은 계속 진행됩니다', W/2, H - 24);
+}
+
+function setDash(open, tab){
+  G.dash.open = open;
+  if (tab !== undefined) G.dash.tab = tab;
+  const el = document.getElementById('dash');
+  if (el && el.style) el.style.display = open ? 'block' : 'none';
+  if (open) drawDash();
 }
 
 function drawOver(){
@@ -2510,6 +2933,16 @@ function drawOver(){
     ctx.globalAlpha = 1;
   }
   drawButton(OVER_BTN, '다시 점화', true);
+  ctx.beginPath();
+  ctx.roundRect(DASH_OVER_BTN.x, DASH_OVER_BTN.y, DASH_OVER_BTN.w, DASH_OVER_BTN.h, 10);
+  ctx.fillStyle = 'rgba(40,56,96,0.85)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,210,120,0.5)';
+  ctx.stroke();
+  ctx.fillStyle = '#ffd88a';
+  ctx.font = 'bold 13px "Noto Sans KR",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('정산 보기', DASH_OVER_BTN.x + DASH_OVER_BTN.w/2, DASH_OVER_BTN.y + 31);
   // 기록 초기화 (2단계 확인)
   ctx.beginPath();
   ctx.roundRect(RESET_BTN.x, RESET_BTN.y, RESET_BTN.w, RESET_BTN.h, 6);
@@ -2558,6 +2991,20 @@ function loop(now){
     if (G.autoTimer <= 0) startWave();
   }
   if (G.resetConfirmT > 0) G.resetConfirmT -= dt;
+  if (G.phase === 'combat'){
+    G.dashT -= dt;
+    if (G.dashT <= 0){
+      G.dashT = 0.5;
+      G.dpsHist.push(G.dmgAcc * 2); G.dmgAcc = 0;
+      if (G.dpsHist.length > 120) G.dpsHist.shift();
+      G.coreHist.push(G.coreHp);
+      if (G.coreHist.length > 120) G.coreHist.shift();
+    }
+  }
+  if (G.dash.open){
+    G.dashDrawT -= dt;
+    if (G.dashDrawT <= 0){ G.dashDrawT = 0.12; drawDash(); }
+  }
   G.saveT += dt;
   if (G.saveT > 10){
     G.saveT = 0;
