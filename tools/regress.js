@@ -1,0 +1,36 @@
+const fs=require('fs');
+const bucket=[];
+const mk=()=>new Proxy({}, {get:(t,p)=>{ if(p==='measureText')return s=>({width:String(s||'').length*6}); if(p==='createRadialGradient'||p==='createLinearGradient')return()=>({addColorStop(){}}); if(p==='fillText')return s=>bucket.push(String(s)); return ()=>{} }, set:()=>true});
+const cv=()=>({style:{},getContext:()=>mk(),addEventListener(){},getBoundingClientRect:()=>({left:0,top:0,width:1024,height:640}),width:1024,height:640});
+const cs={game:cv(),dash:cv(),codex:cv(),roster:cv()};
+global.document={getElementById:id=>cs[id]||cs.game,querySelector:()=>cs.game,createElement:()=>cv()};
+global.window={addEventListener(){},matchMedia:()=>({matches:false})};
+const store={};global.localStorage={getItem:k=>k in store?store[k]:null,setItem:(k,v)=>{store[k]=String(v)},removeItem:k=>{delete store[k]}};
+global.location={search:'?autotest=1',reload(){}};
+let now=0;global.performance={now:()=>now};let raf=null;global.requestAnimationFrame=cb=>{raf=cb};
+const to=[];global.setTimeout=cb=>{to.push(cb);return 0};global.setInterval=()=>0;
+const html=fs.readFileSync('/home/sandbox/abyss-lantern/index.html','utf8');
+const sc=html.match(/<script>([\s\S]*?)<\/script>/)[1]+';globalThis.__X={newRun,VERSION,UNIT_TYPES,CLASSES,SYNERGY,CLASS_PERKS,synergyLevel,bardHaste,unitCd,addUnit,draw,drawCodex,drawDash,drawRoster,checkClassAwakening,pickClassPerk,perkHas};';
+eval(sc);to.forEach(c=>c());
+const X=globalThis.__X;
+const A=(c,m)=>{if(!c){console.log('FAIL',m);process.exit(1)}};
+X.newRun();const G=window.__G;G.phase='shop';
+A(Object.keys(X.CLASSES).length===11&&X.UNIT_TYPES.length===36,'counts');
+A(X.UNIT_TYPES.filter(t=>t.cls==='bard').length===3,'bard 3');
+for(const t of X.UNIT_TYPES)A(X.CLASSES[t.cls],t.id);
+G.units=[];A(X.bardHaste()===1,'base');
+const bd=X.UNIT_TYPES.filter(t=>t.cls==='bard');
+X.addUnit(bd[0]);X.addUnit(bd[1]);A(X.synergyLevel('bard')===1&&Math.abs(X.bardHaste()-1.06)<1e-9,'tier1 '+X.bardHaste());
+const u0=G.units[0];const c1=X.unitCd(u0);
+X.addUnit(bd[2]);X.addUnit(bd[0]);A(X.synergyLevel('bard')===2&&Math.abs(X.bardHaste()-1.15)<1e-9,'tier2');
+G.classPerks.bard=['t1_dmg','t2_mech'];A(Math.abs(X.bardHaste()-1.19)<1e-9,'perk');
+G.classPerks.bard=[];
+X.checkClassAwakening();A(G.classChoice&&G.classChoice.cls==='bard','awaken queued');
+X.pickClassPerk(0);
+G.meta.codex.units=Object.fromEntries(X.UNIT_TYPES.map(t=>[t.id,true]));
+for(const q of [0,1]){G.settings.quality=q;G.phase='combat';X.draw();}
+G.codex.open=true;G.codex.tab=0;X.drawCodex();
+G.dash.open=true;for(const t of [0,1,2,3])try{G.dash.tab=t;X.drawDash();}catch(e){A(false,'dash '+e)}
+G.roster.open=true;X.drawRoster();
+A(/^R6[5-9]|R[7-9]/.test(X.VERSION),'ver');
+console.log('h65 PASS');
